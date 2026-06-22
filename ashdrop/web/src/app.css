@@ -1,0 +1,56 @@
+@import 'tailwindcss';
+
+/* Self-hosted variable fonts (no third-party requests — matters for crypto pages) */
+@import '@fontsource-variable/space-grotesk';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+
+/*
+  Ashdrop design tokens — bone/rust, dull two-color light theme.
+  Color encodes nothing flashy here: bone = paper, rust = the one accent
+  (links, CTA, the burn), ink = text, ash = muted neutral.
+*/
+@theme {
+	--color-bone: #f7f7f7; /* page background (neutral near-white) */
+	--color-paper: #ffffff; /* raised surface (cards, editor) */
+	--color-rust: #a1654b; /* the single accent */
+	--color-rust-deep: #88503b; /* hover / pressed */
+	--color-ink: #1f1c18; /* primary text */
+	--color-ash: #8a8278; /* secondary text, dividers */
+	--color-ashline: #e6e3de; /* hairline borders */
+
+	--font-display: 'Space Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
+	--font-body: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+}
+
+@layer base {
+	html {
+		scroll-behavior: smooth;
+	}
+
+	body {
+		background-color: var(--color-bone);
+		color: var(--color-ink);
+		font-family: var(--font-body);
+		-webkit-font-smoothing: antialiased;
+		text-rendering: optimizeLegibility;
+	}
+
+	::selection {
+		background-color: color-mix(in oklab, var(--color-rust) 28%, transparent);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		html {
+			scroll-behavior: auto;
+		}
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.001ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.001ms !important;
+		}
+	}
+}
