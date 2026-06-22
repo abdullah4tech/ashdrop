@@ -1,0 +1,28 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# In Render: New → Blueprint → connect this repo. Render reads this file.
+services:
+  - type: web
+    name: ashdrop-api
+    runtime: docker
+    plan: free
+    region: oregon
+    rootDir: ashdrop/api
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: true
+    # Render injects PORT at runtime and the app binds to it — don't set PORT here.
+
+    # --- Persistence (optional; needs a paid instance, not free) ---
+    # SQLite lives on an ephemeral filesystem by default, so drops reset on every
+    # deploy/restart. That's tolerable for an MVP (secrets are short-lived and
+    # re-creatable). To keep drops across restarts, switch `plan` off free, then
+    # uncomment the disk + env below — the image already declares VOLUME /data.
+    #
+    # disk:
+    #   name: ashdrop-data
+    #   mountPath: /data
+    #   sizeGB: 1
+    # envVars:
+    #   - key: ASHDROP_DB
+    #     value: /data/ashdrop.db
