@@ -1,56 +1,79 @@
 @import 'tailwindcss';
 
-/* Self-hosted variable fonts (no third-party requests — matters for crypto pages) */
 @import '@fontsource-variable/space-grotesk';
 @import '@fontsource-variable/inter';
 @import '@fontsource-variable/jetbrains-mono';
 
-/*
-  Ashdrop design tokens — bone/rust, dull two-color light theme.
-  Color encodes nothing flashy here: bone = paper, rust = the one accent
-  (links, CTA, the burn), ink = text, ash = muted neutral.
-*/
 @theme {
-	--color-bone: #f7f7f7; /* page background (neutral near-white) */
-	--color-paper: #ffffff; /* raised surface (cards, editor) */
-	--color-rust: #a1654b; /* the single accent */
-	--color-rust-deep: #88503b; /* hover / pressed */
-	--color-ink: #1f1c18; /* primary text */
-	--color-ash: #8a8278; /* secondary text, dividers */
-	--color-ashline: #e6e3de; /* hairline borders */
+	--color-bg:     #ffffff;
+	--color-surf:   #f8f8f7;
+	--color-ink:    #111111;
+	--color-muted:  #787878;
+	--color-line:   #e8e8e8;
+	--color-rust:   #b05c3e;
+	--color-rust-h: #944c34;
 
 	--font-display: 'Space Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
-	--font-body: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
-	--font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+	--font-body:    'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+	--font-mono:    'JetBrains Mono Variable', ui-monospace, monospace;
 }
 
 @layer base {
-	html {
-		scroll-behavior: smooth;
-	}
+	*, *::before, *::after { box-sizing: border-box; }
+
+	html { scroll-behavior: smooth; }
 
 	body {
-		background-color: var(--color-bone);
+		background: var(--color-bg);
 		color: var(--color-ink);
 		font-family: var(--font-body);
 		-webkit-font-smoothing: antialiased;
 		text-rendering: optimizeLegibility;
 	}
 
-	::selection {
-		background-color: color-mix(in oklab, var(--color-rust) 28%, transparent);
-	}
+	::selection { background: color-mix(in oklab, var(--color-rust) 18%, transparent); }
 
 	@media (prefers-reduced-motion: reduce) {
-		html {
-			scroll-behavior: auto;
-		}
-		*,
-		*::before,
-		*::after {
+		*, *::before, *::after {
 			animation-duration: 0.001ms !important;
-			animation-iteration-count: 1 !important;
 			transition-duration: 0.001ms !important;
 		}
 	}
 }
+
+/* ── Text logo ── */
+.brand-ash { color: var(--color-rust); }
+
+/* ── Nav GitHub link ── */
+.gh-link {
+	display: inline-flex !important;
+	align-items: center;
+	gap: 0.35rem;
+}
+
+/* ── Button icon reveal ── */
+.btn-icon {
+	display: inline-flex;
+	align-items: center;
+	overflow: hidden;
+	width: 0;
+	margin-left: 0;
+	opacity: 0;
+	transform: translateX(-5px);
+	transition:
+		width 0.22s ease,
+		margin-left 0.22s ease,
+		opacity 0.16s ease,
+		transform 0.22s ease;
+	flex-shrink: 0;
+}
+
+button:not(:disabled):hover .btn-icon,
+a:hover .btn-icon {
+	width: 0.9rem;
+	margin-left: 0.4rem;
+	opacity: 1;
+	transform: translateX(0);
+}
+
+button:disabled .btn-icon { opacity: 0; width: 0; margin-left: 0; }

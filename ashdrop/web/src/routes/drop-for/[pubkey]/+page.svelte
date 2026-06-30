@@ -1,12 +1,13 @@
 <script lang="ts">
-	import { slide } from 'svelte/transition';
-	import { cubicOut } from 'svelte/easing';
+	import { page } from '$app/state';
 	import { parseEnv, buildEnv } from '$lib/env';
 	import ArrowRight from '$lib/components/ArrowRight.svelte';
-	import { encryptSecret } from '$lib/crypto';
+	import { encryptForRecipient } from '$lib/crypto';
 	import { createSecret, fetchStatus, type CreateResult } from '$lib/api';
 
-	let phase = $state<'idle' | 'edit' | 'creating' | 'ready'>('idle');
+	const recipientPubB64 = page.params.pubkey ?? '';
+
+	let phase = $state<'edit' | 'creating' | 'ready'>('edit');
 	let text = $state('');
 	let excluded = $state(new Set<string>());
 	let ttl = $state(86400);
@@ -18,7 +19,7 @@
 	let included = $derived(pairs.filter((p) => !excluded.has(p.key)));
 
 	let result = $state<CreateResult | null>(null);
-	let link = $state('');
+	let dropLink = $state('');
 	let copied = $state(false);
 	let opened = $state(false);
 
@@ -43,19 +44,26 @@
 		e.preventDefault();
 		dragging = false;
 		const file = e.dataTransfer?.files?.[0];
-		if (file) { text = await file.text(); phase = 'edit'; }
+		if (file) text = await file.text();
 	}
 
 	async function create() {
 		error = '';
 		const plaintext = pairs.length ? buildEnv(included) : text.trim();
 		if (!plaintext) { error = 'Paste an .env first.'; return; }
+		if (!recipientPubB64) { error = 'Invalid receive address.'; return; }
 		phase = 'creating';
 		try {
-			const sealed = await encryptSecret(plaintext);
-			const res = await createSecret({ ciphertext: sealed.ciphertext, iv: sealed.iv, ttl, maxViews });
+			const sealed = await encryptForRecipient(plaintext, recipientPubB64);
+			const res = await createSecret({
+				ciphertext: sealed.ciphertext,
+				iv: sealed.iv,
+				ttl,
+				maxViews,
+				ephemeralPub: sealed.ephemeralPub
+			});
 			result = res;
-			link = `${location.origin}/s/${res.id}#${sealed.key}`;
+			dropLink = `${location.origin}/s/${res.id}`;
 			phase = 'ready';
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Something went wrong.';
@@ -64,7 +72,7 @@
 	}
 
 	async function copy() {
-		await navigator.clipboard.writeText(link);
+		await navigator.clipboard.writeText(dropLink);
 		copied = true;
 		setTimeout(() => (copied = false), 1800);
 	}
@@ -74,7 +82,7 @@
 		text = '';
 		excluded = new Set();
 		result = null;
-		link = '';
+		dropLink = '';
 		opened = false;
 		error = '';
 	}
@@ -96,93 +104,81 @@
 </script>
 
 <svelte:head>
-	<title>Ashdrop — drop it. it turns to ash.</title>
-	<meta name="description" content="Share a .env without handing it over. Encrypted in your browser, shared as one link, gone after a single read." />
+	<title>Drop a secret — Ashdrop</title>
+	<meta name="description" content="Send an encrypted secret that only the recipient can open." />
 </svelte:head>
 
 <main>
 	{#if phase !== 'ready'}
-		<div class="hero" class:hero--idle={phase === 'idle'}>
-			<p class="eyebrow">zero-knowledge · self-destructing · open source</p>
-			<h1>Drop a secret.<br />It turns to ash.</h1>
-			<p class="sub">Paste your <code>.env</code> — encrypted here, shared once, gone forever. We never see it.</p>
+		<div class="hero">
+			<p class="eyebrow">end-to-end encrypted · one recipient only</p>
+			<h1>Drop a secret<br />directly.</h1>
+			<p class="sub">Only the person who shared this link can open what you drop here. Not the server. Not anyone else.</p>
 		</div>
 
-		{#if phase === 'idle'}
-			<button class="cta" onclick={() => (phase = 'edit')}>
-				New drop
-				<span class="btn-icon"><ArrowRight size="0.9rem" /></span>
-			</button>
-		{:else}
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div
-				class="editor-wrap"
-				transition:slide={{ duration: 280, easing: cubicOut }}
-			>
-				<div
-					class="editor"
-					class:drag={dragging}
-					ondragover={(e) => { e.preventDefault(); dragging = true; }}
-					ondragleave={() => (dragging = false)}
-					ondrop={onDrop}
-				>
-					<textarea
-						bind:value={text}
-						spellcheck="false"
-						placeholder={'# paste or drop a .env file\nDATABASE_URL=postgres://…\nSTRIPE_KEY=sk_live_…'}
-					></textarea>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="editor"
+			class:drag={dragging}
+			ondragover={(e) => { e.preventDefault(); dragging = true; }}
+			ondragleave={() => (dragging = false)}
+			ondrop={onDrop}
+		>
+			<textarea
+				bind:value={text}
+				spellcheck="false"
+				placeholder={'# paste or drop a .env file\nDATABASE_URL=postgres://…\nSTRIPE_KEY=sk_live_…'}
+			></textarea>
+		</div>
+
+		{#if pairs.length}
+			<div class="keys">
+				<p class="keys-head">{included.length}/{pairs.length} keys — untick anything you didn't mean to share</p>
+				<div class="key-list">
+					{#each pairs as p (p.key)}
+						<label class="key" class:off={excluded.has(p.key)}>
+							<input type="checkbox" checked={!excluded.has(p.key)} onchange={() => toggle(p.key)} />
+							<span>{p.key}</span>
+						</label>
+					{/each}
 				</div>
-
-				{#if pairs.length}
-					<div class="keys">
-						<p class="keys-head">{included.length}/{pairs.length} keys — untick anything you didn't mean to share</p>
-						<div class="key-list">
-							{#each pairs as p (p.key)}
-								<label class="key" class:off={excluded.has(p.key)}>
-									<input type="checkbox" checked={!excluded.has(p.key)} onchange={() => toggle(p.key)} />
-									<span>{p.key}</span>
-								</label>
-							{/each}
-						</div>
-					</div>
-				{/if}
-
-				<div class="options">
-					<div class="opt">
-						<span class="opt-label">Expires in</span>
-						<div class="seg">
-							{#each ttlOptions as o (o.v)}
-								<button class:active={ttl === o.v} onclick={() => (ttl = o.v)}>{o.label}</button>
-							{/each}
-						</div>
-					</div>
-					<div class="opt">
-						<span class="opt-label">Max views</span>
-						<div class="seg">
-							{#each viewOptions as o (o.v)}
-								<button class:active={maxViews === o.v} onclick={() => (maxViews = o.v)}>{o.label}</button>
-							{/each}
-						</div>
-					</div>
-				</div>
-
-				{#if error}<p class="err">{error}</p>{/if}
-
-				<button class="cta" onclick={create} disabled={phase === 'creating'}>
-					{phase === 'creating' ? 'Encrypting…' : 'Encrypt & create link'}
-					<span class="btn-icon"><ArrowRight size="0.9rem" /></span>
-				</button>
 			</div>
 		{/if}
+
+		<div class="options">
+			<div class="opt">
+				<span class="opt-label">Expires in</span>
+				<div class="seg">
+					{#each ttlOptions as o (o.v)}
+						<button class:active={ttl === o.v} onclick={() => (ttl = o.v)}>{o.label}</button>
+					{/each}
+				</div>
+			</div>
+			<div class="opt">
+				<span class="opt-label">Max views</span>
+				<div class="seg">
+					{#each viewOptions as o (o.v)}
+						<button class:active={maxViews === o.v} onclick={() => (maxViews = o.v)}>{o.label}</button>
+					{/each}
+				</div>
+			</div>
+		</div>
+
+		{#if error}<p class="err">{error}</p>{/if}
+
+		<button class="cta" onclick={create} disabled={phase === 'creating'}>
+			{phase === 'creating' ? 'Encrypting…' : 'Encrypt & create link'}
+			<span class="btn-icon"><ArrowRight size="0.9rem" /></span>
+		</button>
 	{:else}
 		<div class="hero">
-			<p class="eyebrow">encrypted · ready to share</p>
+			<p class="eyebrow">encrypted · recipient-only</p>
 			<h1>Your link<br />is ready.</h1>
-			<p class="sub">Share it anywhere. The key lives only in the fragment — the server never sees it.</p>
+			<p class="sub">Share it anywhere — only the recipient's browser can decrypt it. No key in the URL.</p>
 		</div>
 
 		<div class="linkrow">
-			<input class="linkinput" readonly value={link} onclick={(e) => e.currentTarget.select()} />
+			<input class="linkinput" readonly value={dropLink} onclick={(e) => e.currentTarget.select()} />
 			<button class="cta-sm" onclick={copy}>{copied ? 'Copied' : 'Copy link'}</button>
 		</div>
 
@@ -200,16 +196,13 @@
 </main>
 
 <style>
-	/* ── Layout ── */
 	main {
 		max-width: 44rem;
 		margin: 0 auto;
 		padding: 3.5rem 1.5rem 6rem;
 	}
 
-	/* ── Hero ── */
-	.hero { margin-bottom: 2rem; }
-	.hero--idle { margin-bottom: 2.8rem; }
+	.hero { margin-bottom: 2.4rem; }
 	.eyebrow {
 		font-family: var(--font-mono);
 		font-size: 0.68rem;
@@ -225,7 +218,6 @@
 		letter-spacing: -0.04em;
 		line-height: 1.0;
 		margin: 0 0 0.9rem;
-		color: var(--color-ink);
 	}
 	.sub {
 		font-size: 0.96rem;
@@ -234,14 +226,7 @@
 		line-height: 1.6;
 		max-width: 34rem;
 	}
-	code {
-		font-family: var(--font-mono);
-		font-size: 0.9em;
-		color: var(--color-ink);
-	}
 
-	/* ── Editor ── */
-	.editor-wrap { overflow: hidden; }
 	.editor {
 		border: 1px solid var(--color-line);
 		background: var(--color-surf);
@@ -263,14 +248,8 @@
 	}
 	textarea::placeholder { color: var(--color-line); }
 
-	/* ── Keys ── */
 	.keys { margin-top: 1rem; }
-	.keys-head {
-		font-size: 0.72rem;
-		color: var(--color-muted);
-		margin: 0 0 0.6rem;
-		font-family: var(--font-mono);
-	}
+	.keys-head { font-size: 0.72rem; color: var(--color-muted); margin: 0 0 0.6rem; font-family: var(--font-mono); }
 	.key-list { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 	.key {
 		display: inline-flex;
@@ -288,13 +267,7 @@
 	.key.off { opacity: 0.35; }
 	.key input { accent-color: var(--color-rust); }
 
-	/* ── Options ── */
-	.options {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 1.8rem;
-		margin: 1.5rem 0;
-	}
+	.options { display: flex; flex-wrap: wrap; gap: 1.8rem; margin: 1.5rem 0; }
 	.opt-label {
 		display: block;
 		font-size: 0.68rem;
@@ -319,13 +292,8 @@
 	.seg button:last-child { border-right: 0; }
 	.seg button.active { background: var(--color-ink); color: var(--color-bg); }
 
-	/* ── CTA ── */
-	.err {
-		color: #c0392b;
-		font-size: 0.82rem;
-		margin: 0 0 1rem;
-		font-family: var(--font-mono);
-	}
+	.err { color: #c0392b; font-size: 0.82rem; margin: 0 0 1rem; font-family: var(--font-mono); }
+
 	.cta {
 		display: flex;
 		align-items: center;
@@ -345,12 +313,7 @@
 	.cta:hover:not(:disabled) { background: var(--color-rust); }
 	.cta:disabled { opacity: 0.5; cursor: progress; }
 
-	/* ── Ready state ── */
-	.linkrow {
-		display: flex;
-		border: 1px solid var(--color-line);
-		margin-bottom: 1.2rem;
-	}
+	.linkrow { display: flex; border: 1px solid var(--color-line); margin-bottom: 1.2rem; }
 	.linkinput {
 		flex: 1;
 		min-width: 0;
@@ -386,12 +349,7 @@
 		font-size: 0.75rem;
 		color: var(--color-muted);
 	}
-	.dot {
-		width: 5px;
-		height: 5px;
-		background: var(--color-line);
-		flex-shrink: 0;
-	}
+	.dot { width: 5px; height: 5px; background: var(--color-line); flex-shrink: 0; }
 	.dot.active { background: var(--color-rust); }
 	.sep { color: var(--color-line); }
 

@@ -7,6 +7,7 @@ export interface CreateInput {
 	iv: string;
 	ttl: number; // seconds
 	maxViews: number; // 0 = unlimited
+	ephemeralPub?: string; // non-empty = recipient-keyed ECDH drop
 }
 
 export interface CreateResult {
@@ -19,6 +20,8 @@ export interface FetchedSecret {
 	ciphertext: string;
 	iv: string;
 	viewsLeft: number; // -1 = unlimited
+	ephemeralPub: string;
+	recipientKeyed: boolean;
 }
 
 export async function createSecret(input: CreateInput): Promise<CreateResult> {

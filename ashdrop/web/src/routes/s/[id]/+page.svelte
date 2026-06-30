@@ -1,26 +1,23 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import Mark from '$lib/components/Mark.svelte';
-	import GithubIcon from '$lib/components/GithubIcon.svelte';
 	import { parseEnv, maskValue, type EnvPair } from '$lib/env';
-	import { decryptSecret } from '$lib/crypto';
+	import { decryptSecret, decryptWithMyKey, hasMyKeyPair } from '$lib/crypto';
 	import { fetchSecret, burnSecret } from '$lib/api';
 
-	type Phase = 'loading' | 'sealed' | 'burning' | 'revealing' | 'revealed' | 'gone' | 'nokey' | 'error';
+	type Phase = 'loading' | 'sealed' | 'recipient-sealed' | 'no-local-key' | 'burning' | 'revealing' | 'revealed' | 'gone' | 'nokey' | 'error';
 	let phase = $state<Phase>('loading');
 	let errMsg = $state('');
 
 	const id = page.params.id ?? '';
 	let keyB64 = '';
-	let cipher: { ciphertext: string; iv: string } | null = null;
+	let cipher: { ciphertext: string; iv: string; ephemeralPub: string; recipientKeyed: boolean } | null = null;
 
 	let plaintext = $state('');
 	let pairs = $state<EnvPair[]>([]);
-	let revealed = $state(false); // unmask values
+	let revealed = $state(false);
 	let copied = $state(false);
 
-	// burn-animation props (computed once)
 	const CIPHER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 	const rnd = (n: number) =>
 		Array.from({ length: n }, () => CIPHER[(Math.random() * CIPHER.length) | 0]).join('');
@@ -34,19 +31,16 @@
 	const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 	onMount(async () => {
-		keyB64 = location.hash.slice(1);
-		if (!keyB64) {
-			phase = 'nokey';
-			return;
-		}
 		try {
 			const s = await fetchSecret(id);
-			if (!s) {
-				phase = 'gone';
-				return;
+			if (!s) { phase = 'gone'; return; }
+			cipher = { ciphertext: s.ciphertext, iv: s.iv, ephemeralPub: s.ephemeralPub, recipientKeyed: s.recipientKeyed };
+			if (s.recipientKeyed) {
+				phase = hasMyKeyPair() ? 'recipient-sealed' : 'no-local-key';
+			} else {
+				keyB64 = location.hash.slice(1);
+				phase = keyB64 ? 'sealed' : 'nokey';
 			}
-			cipher = { ciphertext: s.ciphertext, iv: s.iv };
-			phase = 'sealed';
 		} catch {
 			phase = 'error';
 			errMsg = 'Could not reach the server.';
@@ -58,15 +52,20 @@
 		const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 		phase = reduce ? 'revealing' : 'burning';
 		try {
-			plaintext = await decryptSecret(cipher.ciphertext, cipher.iv, keyB64);
+			if (cipher.recipientKeyed) {
+				plaintext = await decryptWithMyKey(cipher.ciphertext, cipher.iv, cipher.ephemeralPub);
+			} else {
+				plaintext = await decryptSecret(cipher.ciphertext, cipher.iv, keyB64);
+			}
 			pairs = parseEnv(plaintext);
-			// burn after a successful decrypt — never before (wrong key / drop shouldn't destroy it)
 			await burnSecret(id);
-			if (!reduce) await sleep(1000); // let the ash settle
+			if (!reduce) await sleep(1000);
 			phase = 'revealed';
 		} catch {
 			phase = 'error';
-			errMsg = 'This link is invalid, was tampered with, or the key is wrong.';
+			errMsg = cipher.recipientKeyed
+				? 'Could not decrypt. Make sure you are on the same browser where you set up your receive address.'
+				: 'This link is invalid or was tampered with.';
 		}
 	}
 
@@ -89,25 +88,35 @@
 
 <svelte:head><title>Open a drop — Ashdrop</title></svelte:head>
 
-<header class="nav">
-	<a href="/" class="brand"><Mark specks={false} class="brand-mark" />ashdrop</a>
-	<a href="https://github.com/abdullah4tech/ashdrop" target="_blank" rel="noreferrer" class="gh">
-		<GithubIcon size="0.95rem" /> GitHub
-	</a>
-</header>
-
 <main>
 	{#if phase === 'loading'}
 		<p class="muted">Looking for the drop…</p>
-	{:else if phase === 'sealed'}
-		<div class="card center">
-			<Mark size="2.4rem" class="big-mark" />
-			<h1>A secret was shared with you</h1>
+
+	{:else if phase === 'recipient-sealed'}
+		<div class="card">
+			<p class="eyebrow">end-to-end encrypted · for you only</p>
+			<h1>A secret was dropped for you.</h1>
 			<p class="warn">Opening it destroys it. You get <strong>one</strong> look — copy what you need.</p>
-			<button class="btn-burn" onclick={reveal}>Reveal secret 🔥</button>
+			<button class="cta" onclick={reveal}>Reveal secret</button>
 		</div>
+
+	{:else if phase === 'no-local-key'}
+		<div class="card">
+			<h1>Wrong browser or device.</h1>
+			<p class="muted">This drop was encrypted for a specific receive address. Open it on the browser where you set up your key.</p>
+			<a href="/me" class="cta" style="display:inline-block;text-decoration:none;margin-top:1.4rem">Check your receive address →</a>
+		</div>
+
+	{:else if phase === 'sealed'}
+		<div class="card">
+			<p class="eyebrow">zero-knowledge · self-destructing</p>
+			<h1>A secret was shared with you.</h1>
+			<p class="warn">Opening it destroys it. You get <strong>one</strong> look — copy what you need.</p>
+			<button class="cta" onclick={reveal}>Reveal secret</button>
+		</div>
+
 	{:else if phase === 'burning'}
-		<div class="card center burn-stage">
+		<div class="card burn-stage">
 			<div class="burn-lines">
 				{#each burnLines as l, i (i)}
 					<div class="burn-line" style="--d:{l.delay}ms">{l.text}</div>
@@ -115,22 +124,22 @@
 			</div>
 			<div class="embers" aria-hidden="true">
 				{#each embers as e, i (i)}
-					<span
-						class="ember"
-						style="left:{e.left}%; --delay:{e.delay}ms; --dur:{e.dur}ms; width:{e.size}px; height:{e.size}px"
-					></span>
+					<span class="ember" style="left:{e.left}%;--delay:{e.delay}ms;--dur:{e.dur}ms;width:{e.size}px;height:{e.size}px"></span>
 				{/each}
 			</div>
 			<p class="burn-label">decrypting &amp; burning…</p>
 		</div>
+
 	{:else if phase === 'revealing'}
 		<p class="muted">Decrypting locally…</p>
+
 	{:else if phase === 'revealed'}
-		<div class="burned-banner">🔥 This link is now destroyed. It won’t open again — copy what you need below.</div>
+		<div class="burned-banner">This link is now destroyed. It won't open again.</div>
+
 		<div class="vars">
 			<div class="vars-bar">
 				<span>{pairs.length || 1} {pairs.length === 1 ? 'value' : 'values'}</span>
-				<button class="ghost-sm" onclick={() => (revealed = !revealed)}>{revealed ? 'Hide' : 'Reveal'} values</button>
+				<button class="ghost-sm" onclick={() => (revealed = !revealed)}>{revealed ? 'Hide' : 'Show'} values</button>
 			</div>
 			{#if pairs.length}
 				<table>
@@ -149,129 +158,95 @@
 		</div>
 
 		<div class="actions">
-			<button class="btn-burn" onclick={copyAll}>{copied ? 'Copied ✓' : 'Copy all'}</button>
-			<button class="btn-ghost" onclick={download}>Download .env</button>
+			<button class="cta-sm" onclick={copyAll}>{copied ? 'Copied' : 'Copy all'}</button>
+			<button class="outline" onclick={download}>Download .env</button>
 		</div>
 
 		<details class="cli">
 			<summary>CLI one-liner</summary>
 			<pre><code>export $(cat .env | xargs)</code></pre>
 		</details>
+
 	{:else if phase === 'gone'}
-		<div class="card center">
-			<h1>This secret no longer exists</h1>
+		<div class="card">
+			<h1>This secret no longer exists.</h1>
 			<p class="muted">It was already opened, or it expired. Secrets are one-time by design.</p>
-			<a href="/" class="btn-burn linkbtn">Make your own →</a>
+			<a href="/" class="cta" style="display:inline-block;text-decoration:none;margin-top:1.4rem">Make your own →</a>
 		</div>
+
 	{:else if phase === 'nokey'}
-		<div class="card center">
-			<h1>This link is incomplete</h1>
-			<p class="muted">The part after <code>#</code> — the decryption key — is missing, so this can’t be opened. Ask the sender for the full link.</p>
+		<div class="card">
+			<h1>This link is incomplete.</h1>
+			<p class="muted">The decryption key (the part after <code>#</code>) is missing. Ask the sender for the full link.</p>
 		</div>
+
 	{:else}
-		<div class="card center">
-			<h1>Couldn’t open this</h1>
+		<div class="card">
+			<h1>Couldn't open this.</h1>
 			<p class="muted">{errMsg}</p>
-			<a href="/" class="btn-burn linkbtn">Make your own →</a>
+			<a href="/" class="cta" style="display:inline-block;text-decoration:none;margin-top:1.4rem">Make your own →</a>
 		</div>
 	{/if}
 </main>
 
 <style>
-	.nav {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		max-width: 42rem;
-		margin: 0 auto;
-		padding: 1.5rem;
-	}
-	.brand {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-family: var(--font-mono);
-		font-weight: 700;
-		font-size: 1.05rem;
-		color: var(--color-ink);
-		text-decoration: none;
-	}
-	.brand :global(.brand-mark) {
-		color: var(--color-rust);
-	}
-	.gh {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.85rem;
-		color: var(--color-rust);
-		text-decoration: none;
-	}
-	.gh:hover {
-		color: var(--color-rust-deep);
-	}
+	/* ── Layout ── */
 	main {
 		max-width: 42rem;
 		margin: 0 auto;
-		padding: 2rem 1.5rem 5rem;
+		padding: 3.5rem 1.5rem 6rem;
 	}
-	.muted {
-		color: var(--color-ash);
-	}
+	.muted { color: var(--color-muted); font-size: 0.9rem; }
 
+	/* ── Card states ── */
 	.card {
-		border: 1px solid var(--color-ashline);
-		border-radius: 14px;
-		background: var(--color-paper);
+		border: 1px solid var(--color-line);
 		padding: 2.5rem 2rem;
+		background: var(--color-surf);
 	}
-	.center {
-		text-align: center;
-	}
-	.card :global(.big-mark) {
-		color: var(--color-rust);
+	.eyebrow {
+		font-family: var(--font-mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--color-muted);
+		margin: 0 0 1rem;
 	}
 	h1 {
 		font-family: var(--font-display);
-		font-size: clamp(1.5rem, 3.5vw, 2.1rem);
-		font-weight: 700;
-		letter-spacing: -0.02em;
-		margin: 0.8rem 0 0.6rem;
+		font-size: clamp(1.6rem, 4vw, 2.2rem);
+		font-weight: 800;
+		letter-spacing: -0.03em;
+		margin: 0 0 0.7rem;
+		line-height: 1.1;
 	}
 	.warn {
-		color: var(--color-ash);
+		color: var(--color-muted);
 		margin: 0 0 1.6rem;
+		font-size: 0.92rem;
+		line-height: 1.55;
 	}
-	.warn strong {
-		color: var(--color-rust);
-	}
-	code {
-		font-family: var(--font-mono);
-		color: var(--color-rust);
-	}
+	.warn strong { color: var(--color-ink); }
+	code { font-family: var(--font-mono); font-size: 0.9em; }
 
-	.btn-burn {
-		padding: 0.85rem 1.6rem;
+	.cta {
+		display: block;
+		width: 100%;
+		padding: 0.9rem 1.2rem;
 		border: 0;
-		border-radius: 10px;
-		background: var(--color-rust);
-		color: var(--color-paper);
-		font-weight: 600;
-		font-size: 1rem;
+		background: var(--color-ink);
+		color: var(--color-bg);
+		font-family: var(--font-display);
+		font-weight: 700;
+		font-size: 0.95rem;
+		letter-spacing: -0.01em;
 		cursor: pointer;
-		transition: background 0.2s, transform 0.18s;
-		text-decoration: none;
-		display: inline-block;
+		transition: background 0.12s;
+		text-align: left;
 	}
-	.btn-burn:hover {
-		background: var(--color-rust-deep);
-		transform: translateY(-2px);
-	}
-	.linkbtn {
-		margin-top: 1.4rem;
-	}
+	.cta:hover { background: var(--color-rust); }
 
-	/* burn animation */
+	/* ── Burn animation ── */
 	.burn-stage {
 		position: relative;
 		overflow: hidden;
@@ -298,16 +273,8 @@
 		animation-delay: var(--d);
 	}
 	@keyframes ash-line {
-		0% {
-			opacity: 1;
-			transform: translateY(0);
-			filter: blur(0);
-		}
-		100% {
-			opacity: 0;
-			transform: translateY(-16px);
-			filter: blur(4px);
-		}
+		0% { opacity: 1; transform: translateY(0); filter: blur(0); }
+		100% { opacity: 0; transform: translateY(-16px); filter: blur(4px); }
 	}
 	.embers {
 		position: absolute;
@@ -317,134 +284,110 @@
 	.ember {
 		position: absolute;
 		bottom: 2.5rem;
-		border-radius: 50%;
 		background: var(--color-rust);
-		box-shadow: 0 0 6px 1px color-mix(in oklab, var(--color-rust) 70%, transparent);
 		opacity: 0;
 		animation: ember-rise var(--dur) ease-out forwards;
 		animation-delay: var(--delay);
 	}
 	@keyframes ember-rise {
-		0% {
-			opacity: 0;
-			transform: translateY(0) scale(1);
-		}
-		25% {
-			opacity: 0.9;
-		}
-		100% {
-			opacity: 0;
-			transform: translateY(-90px) scale(0.3);
-		}
+		0% { opacity: 0; transform: translateY(0) scale(1); }
+		25% { opacity: 0.9; }
+		100% { opacity: 0; transform: translateY(-90px) scale(0.3); }
 	}
 	.burn-label {
 		margin: 1.2rem 0 0;
 		font-family: var(--font-mono);
-		font-size: 0.78rem;
+		font-size: 0.75rem;
 		color: var(--color-rust);
 		text-align: center;
 	}
 
+	/* ── Revealed state ── */
 	.burned-banner {
-		border: 1px solid color-mix(in oklab, var(--color-rust) 35%, var(--color-ashline));
-		background: color-mix(in oklab, var(--color-rust) 7%, var(--color-paper));
-		color: var(--color-ink);
-		border-radius: 10px;
-		padding: 0.85rem 1.1rem;
-		font-size: 0.9rem;
+		border: 1px solid var(--color-line);
+		border-left: 3px solid var(--color-rust);
+		background: var(--color-surf);
+		padding: 0.8rem 1rem;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		color: var(--color-muted);
 		margin-bottom: 1.4rem;
 	}
 
 	.vars {
-		border: 1px solid var(--color-ashline);
-		border-radius: 12px;
-		background: var(--color-paper);
-		overflow: hidden;
+		border: 1px solid var(--color-line);
+		background: var(--color-bg);
+		margin-bottom: 1.2rem;
 	}
 	.vars-bar {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		padding: 0.7rem 1rem;
-		border-bottom: 1px solid var(--color-ashline);
+		padding: 0.6rem 1rem;
+		border-bottom: 1px solid var(--color-line);
 		font-family: var(--font-mono);
-		font-size: 0.78rem;
-		color: var(--color-ash);
+		font-size: 0.75rem;
+		color: var(--color-muted);
 	}
 	.ghost-sm {
-		border: 1px solid var(--color-ashline);
+		border: 1px solid var(--color-line);
 		background: transparent;
-		border-radius: 7px;
-		padding: 0.25rem 0.6rem;
-		font-size: 0.74rem;
-		color: var(--color-ink);
-		cursor: pointer;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
+		padding: 0.2rem 0.55rem;
+		font-size: 0.72rem;
 		font-family: var(--font-mono);
-		font-size: 0.84rem;
+		color: var(--color-muted);
+		cursor: pointer;
+		transition: color 0.1s;
 	}
-	td {
-		padding: 0.6rem 1rem;
-		border-bottom: 1px solid var(--color-ashline);
-		vertical-align: top;
-	}
-	tr:last-child td {
-		border-bottom: 0;
-	}
-	.k {
-		color: var(--color-rust);
-		white-space: nowrap;
-	}
-	.v {
-		color: var(--color-ink);
-		word-break: break-all;
-		width: 100%;
-	}
+	.ghost-sm:hover { color: var(--color-ink); }
+	table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 0.82rem; }
+	td { padding: 0.55rem 1rem; border-bottom: 1px solid var(--color-line); vertical-align: top; }
+	tr:last-child td { border-bottom: 0; }
+	.k { color: var(--color-rust); white-space: nowrap; }
+	.v { color: var(--color-ink); word-break: break-all; width: 100%; }
 	.raw {
 		margin: 0;
 		padding: 1rem;
 		font-family: var(--font-mono);
-		font-size: 0.84rem;
+		font-size: 0.82rem;
 		white-space: pre-wrap;
 		word-break: break-all;
+		color: var(--color-ink);
 	}
 
-	.actions {
-		display: flex;
-		gap: 0.7rem;
-		flex-wrap: wrap;
-		margin: 1.3rem 0;
-	}
-	.btn-ghost {
-		padding: 0.85rem 1.4rem;
-		border: 1px solid var(--color-rust);
-		border-radius: 10px;
-		background: transparent;
-		color: var(--color-rust);
-		font-weight: 600;
-		cursor: pointer;
-	}
-	.btn-ghost:hover {
-		background: var(--color-rust);
-		color: var(--color-paper);
-	}
-
-	.cli summary {
-		cursor: pointer;
-		font-size: 0.85rem;
-		color: var(--color-ash);
-	}
-	.cli pre {
-		margin: 0.6rem 0 0;
-		padding: 0.8rem 1rem;
-		background: var(--color-paper);
-		border: 1px solid var(--color-ashline);
-		border-radius: 8px;
+	.actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1.2rem; }
+	.cta-sm {
+		padding: 0.75rem 1.3rem;
+		border: 0;
+		background: var(--color-ink);
+		color: var(--color-bg);
 		font-family: var(--font-mono);
 		font-size: 0.82rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 0.12s;
+	}
+	.cta-sm:hover { background: var(--color-rust); }
+	.outline {
+		padding: 0.75rem 1.3rem;
+		border: 1px solid var(--color-line);
+		background: transparent;
+		color: var(--color-muted);
+		font-family: var(--font-mono);
+		font-size: 0.82rem;
+		cursor: pointer;
+		transition: color 0.1s, border-color 0.1s;
+	}
+	.outline:hover { color: var(--color-ink); border-color: var(--color-ink); }
+
+	.cli summary { cursor: pointer; font-size: 0.82rem; color: var(--color-muted); font-family: var(--font-mono); }
+	.cli pre {
+		margin: 0.5rem 0 0;
+		padding: 0.75rem 1rem;
+		background: var(--color-surf);
+		border: 1px solid var(--color-line);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
 		overflow-x: auto;
 	}
 </style>

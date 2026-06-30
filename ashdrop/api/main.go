@@ -53,10 +53,11 @@ func main() {
 func handleCreate(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	var req struct {
-		Ciphertext string `json:"ciphertext"`
-		IV         string `json:"iv"`
-		TTL        int    `json:"ttl"`
-		MaxViews   int    `json:"maxViews"`
+		Ciphertext   string `json:"ciphertext"`
+		IV           string `json:"iv"`
+		TTL          int    `json:"ttl"`
+		MaxViews     int    `json:"maxViews"`
+		EphemeralPub string `json:"ephemeralPub"` // non-empty = recipient-keyed ECDH drop
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
@@ -85,11 +86,12 @@ func handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	id, notify := randHex(16), randHex(16)
 	sec := Secret{
-		Ciphertext: req.Ciphertext,
-		IV:         req.IV,
-		MaxViews:   maxViews,
-		ExpiresAt:  time.Now().Unix() + int64(ttl),
-		NotifyTok:  notify,
+		Ciphertext:   req.Ciphertext,
+		IV:           req.IV,
+		MaxViews:     maxViews,
+		ExpiresAt:    time.Now().Unix() + int64(ttl),
+		NotifyTok:    notify,
+		EphemeralPub: req.EphemeralPub,
 	}
 	if err := store.Put(id, sec); err != nil {
 		httpError(w, http.StatusInternalServerError, "could not store secret")
@@ -117,9 +119,11 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 		viewsLeft = sec.MaxViews - sec.Views
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ciphertext": sec.Ciphertext,
-		"iv":         sec.IV,
-		"viewsLeft":  viewsLeft,
+		"ciphertext":     sec.Ciphertext,
+		"iv":             sec.IV,
+		"viewsLeft":      viewsLeft,
+		"ephemeralPub":   sec.EphemeralPub,
+		"recipientKeyed": sec.EphemeralPub != "",
 	})
 }
 

@@ -12,13 +12,14 @@ import (
 // Secret is the server's entire view of a drop: ciphertext + metadata.
 // It never holds the key or plaintext — by design.
 type Secret struct {
-	Ciphertext string
-	IV         string
-	MaxViews   int // 0 = unlimited
-	Views      int
-	ExpiresAt  int64
-	NotifyTok  string
-	OpenedAt   *int64
+	Ciphertext   string
+	IV           string
+	MaxViews     int // 0 = unlimited
+	Views        int
+	ExpiresAt    int64
+	NotifyTok    string
+	OpenedAt     *int64
+	EphemeralPub string // non-empty = recipient-keyed drop (ECDH); sender's ephemeral public key
 }
 
 // Store is the persistence seam. SQLite today; swappable for Redis at scale
@@ -27,15 +28,16 @@ type Store struct{ db *sql.DB }
 
 const schema = `
 CREATE TABLE IF NOT EXISTS secrets (
-	id           TEXT PRIMARY KEY,
-	ciphertext   TEXT NOT NULL,
-	iv           TEXT NOT NULL,
-	max_views    INTEGER NOT NULL,
-	views        INTEGER NOT NULL DEFAULT 0,
-	burned       INTEGER NOT NULL DEFAULT 0,
-	expires_at   INTEGER NOT NULL,
-	notify_token TEXT NOT NULL,
-	opened_at    INTEGER
+	id            TEXT PRIMARY KEY,
+	ciphertext    TEXT NOT NULL,
+	iv            TEXT NOT NULL,
+	max_views     INTEGER NOT NULL,
+	views         INTEGER NOT NULL DEFAULT 0,
+	burned        INTEGER NOT NULL DEFAULT 0,
+	expires_at    INTEGER NOT NULL,
+	notify_token  TEXT NOT NULL,
+	opened_at     INTEGER,
+	ephemeral_pub TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_secrets_expires ON secrets(expires_at);
 `
@@ -50,6 +52,9 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, err
 	}
+	// Migrate existing databases: safe to ignore errors when columns already exist.
+	_, _ = db.Exec(`ALTER TABLE secrets ADD COLUMN pin_protected INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE secrets ADD COLUMN ephemeral_pub TEXT NOT NULL DEFAULT ''`)
 	return &Store{db: db}, nil
 }
 
@@ -59,9 +64,9 @@ func now() int64 { return time.Now().Unix() }
 
 func (s *Store) Put(id string, sec Secret) error {
 	_, err := s.db.Exec(
-		`INSERT INTO secrets (id, ciphertext, iv, max_views, views, burned, expires_at, notify_token)
-		 VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
-		id, sec.Ciphertext, sec.IV, sec.MaxViews, sec.ExpiresAt, sec.NotifyTok,
+		`INSERT INTO secrets (id, ciphertext, iv, max_views, views, burned, expires_at, notify_token, ephemeral_pub)
+		 VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?)`,
+		id, sec.Ciphertext, sec.IV, sec.MaxViews, sec.ExpiresAt, sec.NotifyTok, sec.EphemeralPub,
 	)
 	return err
 }
@@ -73,9 +78,9 @@ func (s *Store) Fetch(id string) (*Secret, error) {
 	var openedAt sql.NullInt64
 	var burned int
 	row := s.db.QueryRow(
-		`SELECT ciphertext, iv, max_views, views, burned, expires_at, notify_token, opened_at
+		`SELECT ciphertext, iv, max_views, views, burned, expires_at, notify_token, opened_at, ephemeral_pub
 		 FROM secrets WHERE id = ?`, id)
-	err := row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &sec.NotifyTok, &openedAt)
+	err := row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &sec.NotifyTok, &openedAt, &sec.EphemeralPub)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
