@@ -141,9 +141,9 @@
 <style>
 	/* ── Layout ── */
 	main {
-		max-width: 52rem;
+		max-width: 72rem;
 		margin: 0 auto;
-		padding: 0 1.5rem;
+		padding: 0 clamp(1.5rem, 5vw, 3rem);
 	}
 
 	/* ── Hero ── */
