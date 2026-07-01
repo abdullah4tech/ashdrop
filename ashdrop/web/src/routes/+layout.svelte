@@ -40,7 +40,7 @@
 		padding: 0 1.5rem;
 	}
 	.nav-inner {
-		max-width: 52rem;
+		max-width: 72rem;
 		margin: 0 auto;
 		height: 3.25rem;
 		display: flex;

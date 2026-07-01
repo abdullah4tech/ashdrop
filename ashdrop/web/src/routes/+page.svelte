@@ -1,215 +1,80 @@
 <script lang="ts">
-	import { slide } from 'svelte/transition';
-	import { cubicOut } from 'svelte/easing';
-	import { parseEnv, buildEnv } from '$lib/env';
 	import ArrowRight from '$lib/components/ArrowRight.svelte';
-	import { encryptSecret } from '$lib/crypto';
-	import { createSecret, fetchStatus, type CreateResult } from '$lib/api';
+	import EnvBeam from '$lib/components/EnvBeam.svelte';
+	import { reveal } from '$lib/actions/reveal';
 
-	let phase = $state<'idle' | 'edit' | 'creating' | 'ready'>('idle');
-	let text = $state('');
-	let excluded = $state(new Set<string>());
-	let ttl = $state(86400);
-	let maxViews = $state(1);
-	let error = $state('');
-	let dragging = $state(false);
-
-	let pairs = $derived(parseEnv(text));
-	let included = $derived(pairs.filter((p) => !excluded.has(p.key)));
-
-	let result = $state<CreateResult | null>(null);
-	let link = $state('');
-	let copied = $state(false);
-	let opened = $state(false);
-
-	const ttlOptions = [
-		{ label: '1 hour', v: 3600 },
-		{ label: '24 hours', v: 86400 },
-		{ label: '7 days', v: 604800 }
+	const steps = [
+		'Generate your receive address — once, right here.',
+		"Share your receive link anywhere — it's a public key, not a secret.",
+		'They open it and drop an .env — encrypted in their browser.',
+		'Only your browser can decrypt it. The drop turns to ash after one read.'
 	];
-	const viewOptions = [
-		{ label: '1', v: 1 },
-		{ label: '5', v: 5 },
-		{ label: '∞', v: 0 }
-	];
-
-	function toggle(key: string) {
-		const next = new Set(excluded);
-		next.has(key) ? next.delete(key) : next.add(key);
-		excluded = next;
-	}
-
-	async function onDrop(e: DragEvent) {
-		e.preventDefault();
-		dragging = false;
-		const file = e.dataTransfer?.files?.[0];
-		if (file) { text = await file.text(); phase = 'edit'; }
-	}
-
-	async function create() {
-		error = '';
-		const plaintext = pairs.length ? buildEnv(included) : text.trim();
-		if (!plaintext) { error = 'Paste an .env first.'; return; }
-		phase = 'creating';
-		try {
-			const sealed = await encryptSecret(plaintext);
-			const res = await createSecret({ ciphertext: sealed.ciphertext, iv: sealed.iv, ttl, maxViews });
-			result = res;
-			link = `${location.origin}/s/${res.id}#${sealed.key}`;
-			phase = 'ready';
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Something went wrong.';
-			phase = 'edit';
-		}
-	}
-
-	async function copy() {
-		await navigator.clipboard.writeText(link);
-		copied = true;
-		setTimeout(() => (copied = false), 1800);
-	}
-
-	function reset() {
-		phase = 'edit';
-		text = '';
-		excluded = new Set();
-		result = null;
-		link = '';
-		opened = false;
-		error = '';
-	}
-
-	$effect(() => {
-		if (phase !== 'ready' || !result || opened) return;
-		const { id, notifyToken } = result;
-		const t = setInterval(async () => {
-			const s = await fetchStatus(id, notifyToken);
-			if (s?.opened) { opened = true; clearInterval(t); }
-		}, 3000);
-		return () => clearInterval(t);
-	});
-
-	const ttlLabel = $derived(ttlOptions.find((o) => o.v === ttl)?.label ?? '');
-	const viewLabel = $derived(
-		maxViews === 0 ? 'unlimited views' : `${maxViews} view${maxViews > 1 ? 's' : ''}`
-	);
 </script>
 
 <svelte:head>
-	<title>Ashdrop — drop it. it turns to ash.</title>
-	<meta name="description" content="Share a .env without handing it over. Encrypted in your browser, shared as one link, gone after a single read." />
+	<title>Ashdrop — receive a secret. it turns to ash.</title>
+	<meta
+		name="description"
+		content="Get a receive link. People drop an .env into it — encrypted in their browser, readable only in yours, gone after a single read. Zero-knowledge, open source."
+	/>
 </svelte:head>
 
 <main>
-	{#if phase !== 'ready'}
-		<div class="hero" class:hero--idle={phase === 'idle'}>
-			<p class="eyebrow">zero-knowledge · self-destructing · open source</p>
-			<h1>Drop a secret.<br />It turns to ash.</h1>
-			<p class="sub">Paste your <code>.env</code> — encrypted here, shared once, gone forever. We never see it.</p>
+	<!-- 1 · Hero -->
+	<section class="hero">
+		<p class="eyebrow">end-to-end encrypted · zero-knowledge · open source</p>
+		<h1>Receive a secret.<br />It turns to ash.</h1>
+		<p class="sub">
+			Ashdrop gives you a receive link. People drop an <code>.env</code> into it — encrypted in their
+			browser, readable only in yours, and gone after a single read. We never see it.
+		</p>
+		<a class="cta" href="/me">
+			Receive a secret
+			<span class="btn-icon"><ArrowRight size="0.9rem" /></span>
+		</a>
+	</section>
+
+	<!-- 2 · How it works -->
+	<section class="block">
+		<p class="section-head">How it works</p>
+		<ol class="steps" use:reveal>
+			{#each steps as step, i (i)}
+				<li class="step" use:reveal style="--i: {i}">
+					<span class="n">{i + 1}</span>
+					<span class="step-text">{step}</span>
+				</li>
+			{/each}
+		</ol>
+	</section>
+
+	<!-- 3 · Env beam -->
+	<section class="block">
+		<p class="section-head">The path a secret takes</p>
+		<div class="beam-reveal" use:reveal>
+			<EnvBeam />
 		</div>
-
-		{#if phase === 'idle'}
-			<button class="cta" onclick={() => (phase = 'edit')}>
-				New drop
-				<span class="btn-icon"><ArrowRight size="0.9rem" /></span>
-			</button>
-		{:else}
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div
-				class="editor-wrap"
-				transition:slide={{ duration: 280, easing: cubicOut }}
-			>
-				<div
-					class="editor"
-					class:drag={dragging}
-					ondragover={(e) => { e.preventDefault(); dragging = true; }}
-					ondragleave={() => (dragging = false)}
-					ondrop={onDrop}
-				>
-					<textarea
-						bind:value={text}
-						spellcheck="false"
-						placeholder={'# paste or drop a .env file\nDATABASE_URL=postgres://…\nSTRIPE_KEY=sk_live_…'}
-					></textarea>
-				</div>
-
-				{#if pairs.length}
-					<div class="keys">
-						<p class="keys-head">{included.length}/{pairs.length} keys — untick anything you didn't mean to share</p>
-						<div class="key-list">
-							{#each pairs as p (p.key)}
-								<label class="key" class:off={excluded.has(p.key)}>
-									<input type="checkbox" checked={!excluded.has(p.key)} onchange={() => toggle(p.key)} />
-									<span>{p.key}</span>
-								</label>
-							{/each}
-						</div>
-					</div>
-				{/if}
-
-				<div class="options">
-					<div class="opt">
-						<span class="opt-label">Expires in</span>
-						<div class="seg">
-							{#each ttlOptions as o (o.v)}
-								<button class:active={ttl === o.v} onclick={() => (ttl = o.v)}>{o.label}</button>
-							{/each}
-						</div>
-					</div>
-					<div class="opt">
-						<span class="opt-label">Max views</span>
-						<div class="seg">
-							{#each viewOptions as o (o.v)}
-								<button class:active={maxViews === o.v} onclick={() => (maxViews = o.v)}>{o.label}</button>
-							{/each}
-						</div>
-					</div>
-				</div>
-
-				{#if error}<p class="err">{error}</p>{/if}
-
-				<button class="cta" onclick={create} disabled={phase === 'creating'}>
-					{phase === 'creating' ? 'Encrypting…' : 'Encrypt & create link'}
-					<span class="btn-icon"><ArrowRight size="0.9rem" /></span>
-				</button>
-			</div>
-		{/if}
-	{:else}
-		<div class="hero">
-			<p class="eyebrow">encrypted · ready to share</p>
-			<h1>Your link<br />is ready.</h1>
-			<p class="sub">Share it anywhere. The key lives only in the fragment — the server never sees it.</p>
-		</div>
-
-		<div class="linkrow">
-			<input class="linkinput" readonly value={link} onclick={(e) => e.currentTarget.select()} />
-			<button class="cta-sm" onclick={copy}>{copied ? 'Copied' : 'Copy link'}</button>
-		</div>
-
-		<div class="status-row">
-			<span class="dot" class:active={opened}></span>
-			<span>{opened ? 'Opened' : 'Not opened yet'}</span>
-			<span class="sep">·</span>
-			<span>expires {ttlLabel}</span>
-			<span class="sep">·</span>
-			<span>{viewLabel}</span>
-		</div>
-
-		<button class="ghost" onclick={reset}>Drop another →</button>
-	{/if}
+		<p class="beam-note">
+			Your app's secrets stay encrypted end to end — Ashdrop only ever relays ciphertext to the
+			recipient.
+		</p>
+	</section>
 </main>
 
 <style>
-	/* ── Layout ── */
 	main {
-		max-width: 44rem;
+		max-width: 72rem;
 		margin: 0 auto;
-		padding: 3.5rem 1.5rem 6rem;
+		padding: 0 clamp(1.5rem, 5vw, 3rem) 7rem;
 	}
 
 	/* ── Hero ── */
-	.hero { margin-bottom: 2rem; }
-	.hero--idle { margin-bottom: 2.8rem; }
+	.hero {
+		min-height: calc(100svh - 3.25rem);
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+		margin-bottom: 2rem;
+	}
 	.eyebrow {
 		font-family: var(--font-mono);
 		font-size: 0.68rem;
@@ -220,19 +85,19 @@
 	}
 	h1 {
 		font-family: var(--font-display);
-		font-size: clamp(2.6rem, 6vw, 4rem);
+		font-size: clamp(3rem, 7.5vw, 6rem);
 		font-weight: 800;
 		letter-spacing: -0.04em;
-		line-height: 1.0;
-		margin: 0 0 0.9rem;
+		line-height: 0.98;
+		margin: 0 0 1.4rem;
 		color: var(--color-ink);
 	}
 	.sub {
-		font-size: 0.96rem;
+		font-size: clamp(1rem, 1.4vw, 1.15rem);
 		color: var(--color-muted);
-		margin: 0;
+		margin: 0 0 2.4rem;
 		line-height: 1.6;
-		max-width: 34rem;
+		max-width: 40rem;
 	}
 	code {
 		font-family: var(--font-mono);
@@ -240,170 +105,94 @@
 		color: var(--color-ink);
 	}
 
-	/* ── Editor ── */
-	.editor-wrap { overflow: hidden; }
-	.editor {
-		border: 1px solid var(--color-line);
-		background: var(--color-surf);
-		transition: border-color 0.15s;
-	}
-	.editor.drag { border-color: var(--color-rust); }
-	textarea {
-		width: 100%;
-		min-height: 11rem;
-		resize: vertical;
-		border: 0;
-		outline: none;
-		padding: 1rem 1.1rem;
-		background: transparent;
-		color: var(--color-ink);
-		font-family: var(--font-mono);
-		font-size: 0.85rem;
-		line-height: 1.7;
-	}
-	textarea::placeholder { color: var(--color-line); }
-
-	/* ── Keys ── */
-	.keys { margin-top: 1rem; }
-	.keys-head {
-		font-size: 0.72rem;
-		color: var(--color-muted);
-		margin: 0 0 0.6rem;
-		font-family: var(--font-mono);
-	}
-	.key-list { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-	.key {
+	.cta {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.4rem;
-		padding: 0.3rem 0.65rem;
-		border: 1px solid var(--color-line);
-		background: var(--color-bg);
-		font-family: var(--font-mono);
-		font-size: 0.75rem;
-		cursor: pointer;
-		transition: opacity 0.12s;
-		color: var(--color-ink);
-	}
-	.key.off { opacity: 0.35; }
-	.key input { accent-color: var(--color-rust); }
-
-	/* ── Options ── */
-	.options {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 1.8rem;
-		margin: 1.5rem 0;
-	}
-	.opt-label {
-		display: block;
-		font-size: 0.68rem;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--color-muted);
-		margin-bottom: 0.5rem;
-		font-family: var(--font-mono);
-	}
-	.seg { display: inline-flex; border: 1px solid var(--color-line); }
-	.seg button {
-		padding: 0.45rem 1rem;
-		border: 0;
-		border-right: 1px solid var(--color-line);
-		background: var(--color-bg);
-		color: var(--color-muted);
-		font-family: var(--font-mono);
-		font-size: 0.8rem;
-		cursor: pointer;
-		transition: background 0.1s, color 0.1s;
-	}
-	.seg button:last-child { border-right: 0; }
-	.seg button.active { background: var(--color-ink); color: var(--color-bg); }
-
-	/* ── CTA ── */
-	.err {
-		color: #c0392b;
-		font-size: 0.82rem;
-		margin: 0 0 1rem;
-		font-family: var(--font-mono);
-	}
-	.cta {
-		display: flex;
-		align-items: center;
 		gap: 0;
-		width: 100%;
-		padding: 0.95rem 1.2rem;
-		border: 0;
+		align-self: flex-start;
+		padding: 1.1rem 1.8rem;
 		background: var(--color-ink);
 		color: var(--color-bg);
 		font-family: var(--font-display);
 		font-weight: 700;
-		font-size: 0.95rem;
+		font-size: 1.05rem;
 		letter-spacing: -0.01em;
-		cursor: pointer;
+		text-decoration: none;
 		transition: background 0.12s;
 	}
-	.cta:hover:not(:disabled) { background: var(--color-rust); }
-	.cta:disabled { opacity: 0.5; cursor: progress; }
+	.cta:hover { background: var(--color-rust); }
 
-	/* ── Ready state ── */
-	.linkrow {
-		display: flex;
-		border: 1px solid var(--color-line);
-		margin-bottom: 1.2rem;
-	}
-	.linkinput {
-		flex: 1;
-		min-width: 0;
-		padding: 0.8rem 1rem;
-		border: 0;
-		outline: none;
-		background: var(--color-surf);
+	/* ── Section shell ── */
+	.block { margin-bottom: 6rem; }
+	.section-head {
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
-		color: var(--color-ink);
-	}
-	.cta-sm {
-		padding: 0.8rem 1.2rem;
-		border: 0;
-		border-left: 1px solid var(--color-line);
-		background: var(--color-ink);
-		color: var(--color-bg);
-		font-family: var(--font-mono);
-		font-size: 0.8rem;
-		font-weight: 600;
-		cursor: pointer;
-		white-space: nowrap;
-		transition: background 0.12s;
-	}
-	.cta-sm:hover { background: var(--color-rust); }
-
-	.status-row {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		margin-bottom: 2rem;
-		font-family: var(--font-mono);
-		font-size: 0.75rem;
+		font-size: 0.72rem;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
 		color: var(--color-muted);
+		margin: 0 0 2rem;
 	}
-	.dot {
-		width: 5px;
-		height: 5px;
+
+	/* ── Steps (vertical draw-in flow) ── */
+	.steps {
+		position: relative;
+		list-style: none;
+		margin: 0;
+		padding: 0 0 0 0.9rem;
+	}
+	.steps::before {
+		content: '';
+		position: absolute;
+		left: 0;
+		top: 0.6rem;
+		bottom: 0.6rem;
+		width: 1px;
 		background: var(--color-line);
-		flex-shrink: 0;
+		transform: scaleY(0);
+		transform-origin: top;
+		transition: transform 0.7s ease;
 	}
-	.dot.active { background: var(--color-rust); }
-	.sep { color: var(--color-line); }
+	.steps:global(.in)::before { transform: scaleY(1); }
 
-	.ghost {
-		padding: 0;
-		border: 0;
-		background: transparent;
-		color: var(--color-muted);
-		font-size: 0.85rem;
-		cursor: pointer;
-		text-decoration: underline;
-		text-underline-offset: 3px;
+	.step {
+		display: flex;
+		align-items: baseline;
+		gap: 1.1rem;
+		padding: 1rem 0 1rem 1.6rem;
+		font-size: 1.1rem;
+		line-height: 1.5;
+		color: var(--color-ink);
+		opacity: 0;
+		transform: translateY(8px);
+		transition: opacity 0.5s ease, transform 0.5s ease;
+		transition-delay: calc(var(--i) * 0.12s + 0.15s);
 	}
-	.ghost:hover { color: var(--color-ink); }
+	.step:global(.in) {
+		opacity: 1;
+		transform: translateY(0);
+	}
+	.n {
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		font-weight: 700;
+		color: var(--color-rust);
+		flex-shrink: 0;
+		width: 1.2rem;
+	}
+	.step-text { max-width: 34rem; }
+
+	/* ── Beam ── */
+	.beam-reveal {
+		opacity: 0;
+		transition: opacity 0.6s ease;
+	}
+	.beam-reveal:global(.in) { opacity: 1; }
+	.beam-note {
+		max-width: 30rem;
+		margin: 1.4rem auto 0;
+		text-align: center;
+		font-size: 0.82rem;
+		line-height: 1.6;
+		color: var(--color-muted);
+	}
 </style>
