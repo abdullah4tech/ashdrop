@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ArrowRight from '$lib/components/ArrowRight.svelte';
 	import EnvBeam from '$lib/components/EnvBeam.svelte';
+	import ShareSafe from '$lib/components/ShareSafe.svelte';
 	import { reveal } from '$lib/actions/reveal';
 
 	const steps = [
@@ -56,6 +57,19 @@
 		<p class="beam-note">
 			Your app's secrets stay encrypted end to end — Ashdrop only ever relays ciphertext to the
 			recipient.
+		</p>
+	</section>
+
+	<!-- 4 · Safe to share over any channel -->
+	<section class="block">
+		<p class="section-head">Safe to send over WhatsApp</p>
+		<div class="share-reveal" use:reveal>
+			<ShareSafe />
+		</div>
+		<p class="beam-note">
+			Paste the link into WhatsApp, Slack, or email — it carries no key. The chat app, and anyone
+			who intercepts the message, only ever sees a reference to ciphertext. Only the recipient's
+			browser holds the key to open it, so even a compromised chat can't leak the secret.
 		</p>
 	</section>
 </main>
@@ -187,6 +201,13 @@
 		transition: opacity 0.6s ease;
 	}
 	.beam-reveal:global(.in) { opacity: 1; }
+
+	.share-reveal {
+		opacity: 0;
+		transition: opacity 0.6s ease;
+	}
+	.share-reveal:global(.in) { opacity: 1; }
+
 	.beam-note {
 		max-width: 30rem;
 		margin: 1.4rem auto 0;
