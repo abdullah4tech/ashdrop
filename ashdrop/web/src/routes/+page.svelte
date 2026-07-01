@@ -23,10 +23,10 @@
 	<!-- 1 · Hero -->
 	<section class="hero">
 		<p class="eyebrow">end-to-end encrypted · zero-knowledge · open source</p>
-		<h1>Receive a secret.<br />It turns to ash.</h1>
+		<h1>Receive a secret.<br />Read it once.</h1>
 		<p class="sub">
-			Ashdrop gives you a receive link. People drop an <code>.env</code> into it — encrypted in their
-			browser, readable only in yours, and gone after a single read. We never see it.
+			Share one link. People send you an <code>.env</code> — encrypted in their browser, readable
+			only in yours, and gone after a single read. We never see it.
 		</p>
 		<a class="cta" href="/me">
 			Receive a secret
