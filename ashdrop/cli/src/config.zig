@@ -2,11 +2,9 @@
 
 const std = @import("std");
 
-// pub const managed_api = "https://ashdrop.onrender.com";
-// pub const managed_web = "https://ashdrop.vercel.app";
-//
-pub const managed_api = "http://localhost:8080";
-pub const managed_web = "http://localhost:5173";
+pub const managed_api = "https://ashdrop.onrender.com";
+pub const managed_web = "https://ashdrop.vercel.app";
+
 
 pub fn resolveApi(flag: ?[]const u8, env: ?[]const u8, embedded: ?[]const u8) error{InvalidEndpoint}![]const u8 {
     // A caller can override an embedded self-hosted endpoint without rewriting a received link.
