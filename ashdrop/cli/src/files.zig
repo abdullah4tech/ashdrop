@@ -35,6 +35,12 @@ pub fn requireApiBodySize(body: []const u8) error{RequestTooLarge}!void {
     if (body.len >= max_api_body_size) return error.RequestTooLarge;
 }
 
+pub fn syncDirectory(io: std.Io, dir: std.Io.Dir) !void {
+    var directory = try dir.openFile(io, ".", .{ .allow_directory = true });
+    defer directory.close(io);
+    try directory.sync(io);
+}
+
 const OutputParent = struct {
     dir: std.Io.Dir,
     owns_dir: bool,
@@ -128,6 +134,7 @@ pub fn writeAtomically(io: std.Io, output: *PreparedOutput, content: []const u8)
             else => return err,
         };
     }
+    try syncDirectory(io, output.dir);
 }
 
 test "readEnv rejects files larger than 64 KiB" {

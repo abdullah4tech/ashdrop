@@ -102,6 +102,9 @@ func (s *Store) Metadata(id string) (*Secret, error) {
 	if burned == 1 {
 		return nil, nil
 	}
+	if (sec.RecipientPub == "") != (sec.EphemeralPub == "") {
+		return nil, nil
+	}
 	if openedAt.Valid {
 		v := openedAt.Int64
 		sec.OpenedAt = &v
@@ -122,9 +125,9 @@ func (s *Store) Open(id string) (*Secret, error) {
 	var burned int
 	var openedAt sql.NullInt64
 	row := tx.QueryRow(
-		`SELECT ciphertext, iv, max_views, views, burned, expires_at, opened_at, ephemeral_pub
+		`SELECT ciphertext, iv, max_views, views, burned, expires_at, opened_at, recipient_pub, ephemeral_pub
 		 FROM secrets WHERE id = ?`, id)
-	err = row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &openedAt, &sec.EphemeralPub)
+	err = row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &openedAt, &sec.RecipientPub, &sec.EphemeralPub)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -143,6 +146,9 @@ func (s *Store) Open(id string) (*Secret, error) {
 		return nil, nil
 	}
 	if burned == 1 || (sec.MaxViews > 0 && sec.Views >= sec.MaxViews) {
+		return nil, nil
+	}
+	if (sec.RecipientPub == "") != (sec.EphemeralPub == "") {
 		return nil, nil
 	}
 
@@ -197,7 +203,7 @@ func (s *Store) Fetch(id string) (*Secret, error) {
 	if burned == 1 {
 		return nil, nil
 	}
-	if sec.RecipientPub != "" {
+	if sec.RecipientPub != "" || sec.EphemeralPub != "" {
 		return nil, nil
 	}
 	if openedAt.Valid {

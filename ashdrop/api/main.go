@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -78,6 +79,10 @@ func (api *API) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Ciphertext) > maxBody {
 		httpError(w, http.StatusRequestEntityTooLarge, "secret too large")
+		return
+	}
+	if (req.RecipientPub == "") != (req.EphemeralPub == "") {
+		httpError(w, http.StatusBadRequest, "recipient and ephemeral public keys must be provided together")
 		return
 	}
 	if req.RecipientPub != "" {
@@ -274,7 +279,11 @@ func viewsLeft(sec *Secret) int {
 
 func validPublicKey(encoded string) bool {
 	pub, err := base64.RawURLEncoding.DecodeString(encoded)
-	return err == nil && len(pub) == 65 && pub[0] == 0x04 && base64.RawURLEncoding.EncodeToString(pub) == encoded
+	if err != nil || len(pub) != 65 || pub[0] != 0x04 || base64.RawURLEncoding.EncodeToString(pub) != encoded {
+		return false
+	}
+	_, err = ecdh.P256().NewPublicKey(pub)
+	return err == nil
 }
 
 func cleanupLoop(s *Store) {

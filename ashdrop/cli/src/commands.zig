@@ -495,17 +495,17 @@ test "pull reference resolution uses the parsed drop ID and endpoint" {
     }{
         .{
             .input = "https://web.example/s/0123456789abcdef0123456789abcdef",
-            .expected_endpoint = "http://env.example",
+            .expected_endpoint = "https://env.example",
         },
         .{
-            .input = "ashdrop://drop/0123456789abcdef0123456789abcdef?api=http%3A%2F%2Furi.example%3A18080",
-            .expected_endpoint = "http://uri.example:18080",
+            .input = "ashdrop://drop/0123456789abcdef0123456789abcdef?api=https%3A%2F%2Furi.example%3A18080",
+            .expected_endpoint = "https://uri.example:18080",
         },
     };
 
     for (references) |reference| {
         const args = [_][]const u8{ "pull", reference.input };
-        var target = try resolvePull(std.testing.allocator, &args, "http://env.example");
+        var target = try resolvePull(std.testing.allocator, &args, "https://env.example");
         defer target.deinit(std.testing.allocator);
         try std.testing.expectEqualStrings(id, target.options.drop);
         try std.testing.expectEqualStrings(reference.expected_endpoint, target.endpoint);

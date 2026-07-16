@@ -1,6 +1,7 @@
 //! Provides a scripted loopback HTTP server for CLI request and response tests.
 
 const std = @import("std");
+const files = @import("files.zig");
 
 pub const ExpectedRequest = struct {
     method: std.http.Method,
@@ -37,8 +38,8 @@ pub const Server = struct {
         if (std.Io.net.IpAddress.connect(&address, self.io, .{ .mode = .stream })) |stream| {
             stream.close(self.io);
         } else |_| {}
-        self.listener.socket.close(self.io);
         self.thread.join();
+        self.listener.deinit(self.io);
         self.listener = undefined;
         if (self.failure) |err| return err;
         if (self.next != self.expected.len) return error.TestServerMissedRequest;
@@ -75,7 +76,10 @@ pub const Server = struct {
             return error.TestServerUnexpectedContentType;
         }
 
-        var body_buffer: [8192]u8 = undefined;
+        if (request.head.content_length) |length| {
+            if (length >= files.max_api_body_size) return error.TestServerReadFailed;
+        }
+        var body_buffer: [files.max_api_body_size]u8 = undefined;
         const body_reader = request.readerExpectNone(&.{});
         const body_len = body_reader.readSliceShort(&body_buffer) catch return error.TestServerReadFailed;
         const body = body_buffer[0..body_len];

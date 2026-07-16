@@ -37,7 +37,12 @@
 		try {
 			const metadata = await fetchMetadata(id);
 			if (!metadata) { phase = 'gone'; return; }
-			if (metadata.recipientKeyed && metadata.recipientPub) {
+			if (metadata.recipientKeyed) {
+				if (!metadata.recipientPub) {
+					phase = 'error';
+					errMsg = 'This recipient-keyed drop is missing its recipient identity.';
+					return;
+				}
 				const hasKeyPair = hasMyKeyPair();
 				const matchesRecipient = myPublicKeyB64() === metadata.recipientPub;
 				if (!matchesRecipient || !hasKeyPair) {

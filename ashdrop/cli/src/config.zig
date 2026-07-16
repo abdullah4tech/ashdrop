@@ -5,7 +5,6 @@ const std = @import("std");
 pub const managed_api = "https://ashdrop.onrender.com";
 pub const managed_web = "https://ashdrop.vercel.app";
 
-
 pub fn resolveApi(flag: ?[]const u8, env: ?[]const u8, embedded: ?[]const u8) error{InvalidEndpoint}![]const u8 {
     // A caller can override an embedded self-hosted endpoint without rewriting a received link.
     return validateEndpoint(flag orelse embedded orelse env orelse managed_api);
@@ -25,15 +24,30 @@ fn validateEndpoint(endpoint: []const u8) error{InvalidEndpoint}![]const u8 {
     if (uri.user != null or uri.password != null or uri.query != null or uri.fragment != null) return error.InvalidEndpoint;
 
     var hostname_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
-    if (std.Io.net.HostName.fromUri(uri, &hostname_buffer)) |_| {
-        return endpoint;
+    const host_name = std.Io.net.HostName.fromUri(uri, &hostname_buffer) catch |err| switch (err) {
+        error.InvalidHostName => null,
+        else => return error.InvalidEndpoint,
+    };
+    if (std.mem.eql(u8, uri.scheme, "https")) return endpoint;
+
+    const host = uri.host orelse return error.InvalidEndpoint;
+    var host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
+    const raw_host = host.toRaw(&host_buffer) catch return error.InvalidEndpoint;
+    if (std.Io.net.IpAddress.parseLiteral(raw_host)) |address| {
+        if (isLoopbackAddress(address)) return endpoint;
     } else |_| {
-        const host = uri.host orelse return error.InvalidEndpoint;
-        var host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
-        const raw_host = host.toRaw(&host_buffer) catch return error.InvalidEndpoint;
-        _ = std.Io.net.IpAddress.parseLiteral(raw_host) catch return error.InvalidEndpoint;
+        if (host_name) |name| {
+            if (std.ascii.eqlIgnoreCase(name.bytes, "localhost") or std.ascii.eqlIgnoreCase(name.bytes, "localhost.")) return endpoint;
+        }
     }
-    return endpoint;
+    return error.InvalidEndpoint;
+}
+
+fn isLoopbackAddress(address: std.Io.net.IpAddress) bool {
+    return switch (address) {
+        .ip4 => |ip4| ip4.bytes[0] == 127,
+        .ip6 => |ip6| ip6.isLoopBack() or if (std.Io.net.Ip4Address.fromIp6(ip6)) |ip4| ip4.bytes[0] == 127 else false,
+    };
 }
 
 test "ordinary API references prefer explicit flag then environment" {
@@ -81,4 +95,21 @@ test "endpoint configuration rejects malformed authorities and unsupported schem
 test "endpoint configuration accepts http and https localhost bases" {
     try std.testing.expectEqualStrings("https://localhost", try resolveApi("https://localhost", null, null));
     try std.testing.expectEqualStrings("http://localhost:8080", try resolveWeb("http://localhost:8080", null));
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080", try resolveApi("http://127.0.0.1:8080", null, null));
+    try std.testing.expectEqualStrings("http://[::1]:8080", try resolveWeb("http://[::1]:8080", null));
+}
+
+test "endpoint configuration rejects remote HTTP" {
+    const invalid = [_][]const u8{
+        "http://example.com",
+        "http://localhost.example",
+        "http://192.168.1.1",
+        "http://0.0.0.0",
+        "http://[::]",
+        "http://[2001:db8::1]",
+    };
+    for (invalid) |endpoint| {
+        try std.testing.expectError(error.InvalidEndpoint, resolveApi(endpoint, null, null));
+        try std.testing.expectError(error.InvalidEndpoint, resolveWeb(endpoint, null));
+    }
 }

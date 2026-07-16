@@ -408,6 +408,42 @@ test "HTTP client maps missing rate-limited error and capped responses safely" {
     }
 }
 
+test "HTTP client supports create requests larger than the test server read buffer" {
+    const test_server = @import("test_server.zig");
+    const ciphertext = try std.testing.allocator.alloc(u8, 9 * 1024);
+    defer std.testing.allocator.free(ciphertext);
+    @memset(ciphertext, 'a');
+    const expected = [_]test_server.ExpectedRequest{
+        .{
+            .method = .POST,
+            .target = "/api/secrets",
+            .json_body = true,
+            .response_status = @enumFromInt(201),
+            .response_body = "{\"id\":\"0123456789abcdef0123456789abcdef\",\"notifyToken\":\"notify\",\"expiresAt\":1}",
+        },
+    };
+    var server: test_server.Server = undefined;
+    try server.init(std.testing.io, &expected);
+    var server_live = true;
+    defer if (server_live) server.deinit() catch {};
+    const base_url = try std.fmt.allocPrint(std.testing.allocator, "http://127.0.0.1:{d}", .{server.port()});
+    defer std.testing.allocator.free(base_url);
+    var client = Client{ .allocator = std.testing.allocator, .io = std.testing.io, .base_url = base_url };
+
+    var created = try client.create(.{
+        .ciphertext = ciphertext,
+        .iv = "iv",
+        .ttl = 86400,
+        .maxViews = 1,
+        .ephemeralPub = "ephemeral",
+        .recipientPub = "recipient",
+    });
+    defer created.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef", created.id);
+    try server.deinit();
+    server_live = false;
+}
+
 test "HTTP client rejects redirects without following their location" {
     const test_server = @import("test_server.zig");
     const id = "0123456789abcdef0123456789abcdef";

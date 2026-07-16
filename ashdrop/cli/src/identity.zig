@@ -1,6 +1,7 @@
 //! Creates, validates, and securely persists the local P-256 receive identity.
 
 const std = @import("std");
+const files = @import("files.zig");
 
 pub const Identity = struct {
     d: [32]u8,
@@ -49,21 +50,19 @@ pub fn save(io: std.Io, dir: std.Io.Dir, filename: []const u8, identity: Identit
         .{ &x, &y, &d },
     );
 
-    var file = dir.createFile(io, filename, .{
-        .exclusive = true,
+    var file = try dir.createFileAtomic(io, filename, .{
         .permissions = filePermissions(),
-    }) catch |err| switch (err) {
+        .replace = false,
+    });
+    defer file.deinit(io);
+    try file.file.setPermissions(io, filePermissions());
+    try file.file.writeStreamingAll(io, json);
+    try file.file.sync(io);
+    file.link(io) catch |err| switch (err) {
         error.PathAlreadyExists => return error.IdentityAlreadyExists,
         else => |cause| return cause,
     };
-    errdefer {
-        file.close(io);
-        dir.deleteFile(io, filename) catch {};
-    }
-    try file.setPermissions(io, filePermissions());
-    try file.writeStreamingAll(io, json);
-    try file.sync(io);
-    file.close(io);
+    try files.syncDirectory(io, dir);
 }
 
 pub fn load(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, filename: []const u8) !Identity {
