@@ -1,3 +1,5 @@
+//! Parses and formats Ashdrop receive addresses, drop references, web URLs, and portable URIs.
+
 const std = @import("std");
 const config = @import("config.zig");
 
@@ -104,6 +106,7 @@ fn formatLink(
         return std.fmt.allocPrint(allocator, "{s}/{s}/{s}", .{ trimTrailingSlashes(valid_base), web_path, value });
     }
 
+    // A self-hosted API without a web app remains usable by carrying its endpoint in the URI.
     const prefix = try std.fmt.allocPrint(allocator, "ashdrop://{s}/{s}?api=", .{ uri_kind, value });
     defer allocator.free(prefix);
     const encoded_api_len = percentEncodedLen(api);
@@ -134,6 +137,7 @@ fn parseAshdropUri(
     const query_index = std.mem.indexOfScalar(u8, remaining, '?') orelse return invalid_error;
     const value = remaining[0..query_index];
     const query = remaining[query_index + 1 ..];
+    // Accept one endpoint parameter only so the receiving client has unambiguous routing.
     if (value.len == 0 or !std.mem.startsWith(u8, query, "api=") or std.mem.indexOfScalar(u8, query[4..], '&') != null) {
         return invalid_error;
     }

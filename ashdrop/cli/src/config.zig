@@ -1,3 +1,5 @@
+//! Resolves and validates managed, environment, embedded, and explicit Ashdrop endpoints.
+
 const std = @import("std");
 
 // pub const managed_api = "https://ashdrop.onrender.com";
@@ -7,6 +9,7 @@ pub const managed_api = "http://localhost:8080";
 pub const managed_web = "http://localhost:5173";
 
 pub fn resolveApi(flag: ?[]const u8, env: ?[]const u8, embedded: ?[]const u8) error{InvalidEndpoint}![]const u8 {
+    // A caller can override an embedded self-hosted endpoint without rewriting a received link.
     return validateEndpoint(flag orelse embedded orelse env orelse managed_api);
 }
 

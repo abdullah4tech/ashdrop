@@ -1,3 +1,5 @@
+//! Defines the Ashdrop command-line entry point, dispatch, diagnostics, and address command.
+
 const std = @import("std");
 const config = @import("config.zig");
 const commands = @import("commands.zig");

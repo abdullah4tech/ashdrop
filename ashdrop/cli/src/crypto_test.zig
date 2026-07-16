@@ -1,3 +1,5 @@
+//! Tests protocol interoperability, malformed input handling, and allocation cleanup.
+
 const std = @import("std");
 const crypto = @import("crypto.zig");
 

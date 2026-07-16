@@ -1,3 +1,5 @@
+//! Creates, validates, and securely persists the local P-256 receive identity.
+
 const std = @import("std");
 
 pub const Identity = struct {
@@ -113,6 +115,7 @@ pub fn openConfigDirAt(io: std.Io, home_base: std.Io.Dir, home_path: []const u8)
 fn openSecurePath(io: std.Io, base: std.Io.Dir, path: []const u8, enforce_final_mode: bool) !std.Io.Dir {
     if (path.len == 0) return error.InvalidHomePath;
 
+    // Identity storage is a security boundary: traversal and symlinked components are never followed.
     var current = base;
     var owns_current = false;
     var start: usize = 0;
@@ -143,7 +146,7 @@ fn openSecurePath(io: std.Io, base: std.Io.Dir, path: []const u8, enforce_final_
             break :blk true;
         };
         if (created) {
-            // Repair a restrictive umask before opening the new directory descriptor.
+            // `mkdir` honors umask, so restore private permissions before this directory can hold keys.
             try current.setFilePermissions(io, component, directoryPermissions(), .{ .follow_symlinks = false });
         }
 

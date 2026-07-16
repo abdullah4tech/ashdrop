@@ -1,3 +1,4 @@
+// Declares the standalone Ashdrop CLI package and its source paths.
 .{
     .name = .ashdrop,
     .version = "0.1.0",

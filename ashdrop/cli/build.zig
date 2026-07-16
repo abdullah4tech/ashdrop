@@ -1,3 +1,5 @@
+//! Builds the standalone Ashdrop CLI executable and its unit-test runner.
+
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {

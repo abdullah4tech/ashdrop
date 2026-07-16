@@ -1,3 +1,5 @@
+//! Parses share and pull commands and coordinates local files, crypto, links, and the API.
+
 const std = @import("std");
 const api = @import("api.zig");
 const config = @import("config.zig");
@@ -228,6 +230,7 @@ pub fn pull(args: []const []const u8, runtime: Runtime) !void {
 }
 
 pub fn pullWithRemote(options: PullOptions, runtime: Runtime, remote: PullRemote) !void {
+    // Validate the destination before opening because a consumed one-view drop cannot be restored.
     var output = files.prepareOutput(runtime.allocator, runtime.io, runtime.cwd, options.output, options.force) catch |err| switch (err) {
         error.OutputExists,
         error.OutputIsDirectory,
@@ -242,6 +245,7 @@ pub fn pullWithRemote(options: PullOptions, runtime: Runtime, remote: PullRemote
     const local_identity = try identity.load(runtime.allocator, runtime.io, config_dir, "identity.json");
     const local_public = links.formatRawReceive(local_identity.publicSec1());
 
+    // Metadata is non-consuming, so reject a wrong recipient before `open` spends a view.
     var metadata = (try remote.metadata(remote.context, options.drop)) orelse return error.DropUnavailable;
     defer metadata.deinit(runtime.allocator);
     if (!metadata.recipientKeyed or !std.mem.eql(u8, metadata.recipientPub, &local_public)) return error.RecipientMismatch;
@@ -261,6 +265,7 @@ pub fn pullWithRemote(options: PullOptions, runtime: Runtime, remote: PullRemote
         runtime.allocator.free(plaintext);
     }
     if (!std.unicode.utf8ValidateSlice(plaintext)) return error.InvalidUtf8;
+    // Publish plaintext only after recipient matching, authentication, and content validation succeed.
     files.writeAtomically(runtime.io, &output, plaintext) catch |err| switch (err) {
         error.OutputExists => return err,
         else => return error.OutputWriteFailed,

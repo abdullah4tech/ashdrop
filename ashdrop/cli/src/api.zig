@@ -1,3 +1,5 @@
+//! Provides the Ashdrop HTTP client, wire types, response bounds, and error mapping.
+
 const std = @import("std");
 
 pub const max_response_size = 96 * 1024;
@@ -101,6 +103,7 @@ pub const Client = struct {
         const url = try endpointUrl(self.allocator, self.base_url, path);
         defer self.allocator.free(url);
 
+        // Bound untrusted API responses before copying them into allocator-owned memory.
         var response_buffer: [max_response_size]u8 = undefined;
         var response_writer = std.Io.Writer.fixed(&response_buffer);
         var http_client: std.http.Client = .{
@@ -115,6 +118,7 @@ pub const Client = struct {
             .location = .{ .url = url },
             .method = method,
             .payload = payload,
+            // A configured API must not redirect ciphertext or metadata to another origin.
             .redirect_behavior = .not_allowed,
             .extra_headers = &headers,
             .response_writer = &response_writer,
@@ -170,6 +174,7 @@ pub fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []c
 
 pub fn checkErrorResponse(status: u16, body: []const u8) !void {
     if (status == 429) return error.RateLimited;
+    // Remote error text is untrusted and may contain sensitive data, so never surface it to users.
     const ErrorResponse = struct { @"error": []const u8 };
     var parsed = std.json.parseFromSlice(ErrorResponse, std.heap.page_allocator, body, .{}) catch return error.RemoteFailure;
     defer parsed.deinit();

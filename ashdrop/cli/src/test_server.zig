@@ -1,3 +1,5 @@
+//! Provides a scripted loopback HTTP server for CLI request and response tests.
+
 const std = @import("std");
 
 pub const ExpectedRequest = struct {

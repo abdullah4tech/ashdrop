@@ -1,3 +1,5 @@
+//! Validates shared environment files and writes received plaintext through safe atomic outputs.
+
 const std = @import("std");
 
 pub const max_file_size = 64 * 1024;
@@ -50,6 +52,7 @@ fn openOutputParent(io: std.Io, base_dir: std.Io.Dir, path: []const u8) !OutputP
     }
     errdefer if (owns_current) current.close(io);
 
+    // Resolve each component without links so an intermediate symlink cannot redirect decrypted output.
     while (start < parent.len) {
         const end = std.mem.indexOfScalarPos(u8, parent, start, '/') orelse parent.len;
         const component = parent[start..end];
@@ -85,6 +88,7 @@ pub fn prepareOutput(
     const owns_dir = output_parent.owns_dir;
     errdefer if (owns_dir) output_dir.close(io);
 
+    // Apply the same no-symlink rule to the final filename before reserving a temporary file.
     const existing = output_dir.statFile(io, basename, .{ .follow_symlinks = false }) catch |err| switch (err) {
         error.FileNotFound => null,
         else => |cause| return cause,
@@ -115,6 +119,7 @@ pub fn prepareOutput(
 pub fn writeAtomically(io: std.Io, output: *PreparedOutput, content: []const u8) !void {
     try output.atomic_file.file.writeStreamingAll(io, content);
     try output.atomic_file.file.sync(io);
+    // Normal delivery links only if the destination stayed absent; replacement requires explicit force.
     if (output.force) {
         try output.atomic_file.replace(io);
     } else {

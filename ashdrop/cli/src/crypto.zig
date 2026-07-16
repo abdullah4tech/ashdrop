@@ -1,3 +1,5 @@
+//! Implements the recipient-keyed P-256, HKDF, and AES-GCM protocol used by Ashdrop.
+
 const std = @import("std");
 
 const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
@@ -47,12 +49,14 @@ fn sealForRecipientWithRandomness(
     const recipient = parseRecipientPoint(recipient_sec1) catch return error.InvalidRecipient;
     var ephemeral_private: [32]u8 = undefined;
     defer std.crypto.secureZero(u8, &ephemeral_private);
+    // Each drop samples a new sender key, making reuse for the same recipient negligibly likely.
     randomPrivateScalar(random, &ephemeral_private);
     var ephemeral_public = P256.basePoint.mul(ephemeral_private, .big) catch unreachable;
     defer secureZeroValue(P256, &ephemeral_public);
     const ephemeral_sec1 = ephemeral_public.toUncompressedSec1();
     var key: [Aes256Gcm.key_length]u8 = undefined;
     defer std.crypto.secureZero(u8, &key);
+    // The versioned ECDH/HKDF derivation keeps browser and CLI ciphertext interoperable.
     deriveKey(&ephemeral_private, recipient, &key) catch return error.InvalidRecipient;
 
     var iv: [Aes256Gcm.nonce_length]u8 = undefined;
@@ -122,6 +126,7 @@ pub fn openForRecipient(
     const plaintext = try allocator.alloc(u8, encrypted_len);
     errdefer allocator.free(plaintext);
     const tag: [Aes256Gcm.tag_length]u8 = ciphertext[encrypted_len..][0..Aes256Gcm.tag_length].*;
+    // Authentication must succeed before plaintext becomes available to callers.
     Aes256Gcm.decrypt(plaintext, ciphertext[0..encrypted_len], tag, "", iv, key) catch return error.AuthenticationFailed;
     return plaintext;
 }
@@ -144,6 +149,7 @@ fn parseEphemeralPoint(sec1: []const u8) error{InvalidInput}!P256 {
 fn deriveKey(private: *const [32]u8, peer_public: P256, key: *[Aes256Gcm.key_length]u8) error{InvalidInput}!void {
     var shared_point = peer_public.mul(private.*, .big) catch return error.InvalidInput;
     defer secureZeroValue(P256, &shared_point);
+    // Protocol v1 feeds the ECDH x-coordinate, not a serialized point, into HKDF.
     var shared_coordinates = shared_point.affineCoordinates();
     defer secureZeroValue(@TypeOf(shared_coordinates), &shared_coordinates);
     var shared_x = shared_coordinates.x.toBytes(.big);
@@ -184,6 +190,7 @@ fn encodeB64url(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
 
 fn decodeB64url(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
     const decoded_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(encoded) catch return error.InvalidInput;
+    // One canonical encoding prevents alternate links or payloads from representing the same bytes.
     if (!hasCanonicalTrailingBits(encoded)) return error.InvalidInput;
 
     const decoded = try allocator.alloc(u8, decoded_len);
