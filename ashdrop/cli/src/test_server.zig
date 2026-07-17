@@ -6,6 +6,7 @@ pub const ExpectedRequest = struct {
     method: std.http.Method,
     target: []const u8,
     json_body: bool = false,
+    required_headers: []const std.http.Header = &.{},
     response_status: std.http.Status,
     response_body: []const u8,
     response_headers: []const std.http.Header = &.{},
@@ -73,6 +74,12 @@ pub const Server = struct {
         }
         if (expected.json_body and !std.mem.eql(u8, request.head.content_type orelse "", "application/json")) {
             return error.TestServerUnexpectedContentType;
+        }
+        for (expected.required_headers) |required| {
+            var headers = request.iterateHeaders();
+            while (headers.next()) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, required.name) and std.mem.eql(u8, header.value, required.value)) break;
+            } else return error.TestServerMissingRequiredHeader;
         }
 
         var body_buffer: [8192]u8 = undefined;

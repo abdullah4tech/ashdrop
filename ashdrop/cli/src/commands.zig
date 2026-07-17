@@ -16,6 +16,7 @@ pub const Runtime = struct {
     home: []const u8,
     api_env: ?[]const u8 = null,
     web_env: ?[]const u8 = null,
+    inbox_now: ?i64 = null,
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
 };
@@ -33,6 +34,11 @@ pub const PullOptions = struct {
     drop: []const u8,
     output: []const u8 = ".env.ashdrop",
     force: bool = false,
+    api: ?[]const u8 = null,
+};
+
+pub const InboxOptions = struct {
+    limit: u32 = 20,
     api: ?[]const u8 = null,
 };
 
@@ -142,6 +148,30 @@ pub fn parsePullArgs(args: []const []const u8) error{Usage}!PullOptions {
     return options;
 }
 
+pub fn parseInboxArgs(args: []const []const u8) error{Usage}!InboxOptions {
+    if (args.len == 0 or !std.mem.eql(u8, args[0], "inbox")) return error.Usage;
+
+    var options = InboxOptions{};
+    var limit_set = false;
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (!std.mem.eql(u8, arg, "--limit") and !std.mem.eql(u8, arg, "--api")) return error.Usage;
+        index += 1;
+        if (index == args.len or args[index].len == 0) return error.Usage;
+        const value = args[index];
+        if (std.mem.eql(u8, arg, "--limit")) {
+            if (limit_set) return error.Usage;
+            options.limit = parseInboxLimit(value) catch return error.Usage;
+            limit_set = true;
+        } else {
+            if (options.api != null) return error.Usage;
+            options.api = value;
+        }
+    }
+    return options;
+}
+
 pub fn resolvePull(allocator: std.mem.Allocator, args: []const []const u8, api_env: ?[]const u8) !ResolvedPull {
     var options = try parsePullArgs(args);
     var drop = try links.parseDrop(allocator, options.drop);
@@ -229,6 +259,34 @@ pub fn pull(args: []const []const u8, runtime: Runtime) !void {
     });
 }
 
+pub fn inbox(args: []const []const u8, runtime: Runtime) !void {
+    const options = try parseInboxArgs(args);
+    const endpoint = try config.resolveApi(options.api, runtime.api_env, null);
+    var config_dir = try identity.openConfigDirAt(runtime.io, runtime.home_base, runtime.home);
+    defer config_dir.close(runtime.io);
+    const local_identity = try identity.load(runtime.allocator, runtime.io, config_dir, "identity.json");
+    const recipient = links.formatRawReceive(local_identity.publicSec1());
+    var client = api.Client{
+        .allocator = runtime.allocator,
+        .io = runtime.io,
+        .base_url = endpoint,
+    };
+    const server_key = try client.inboxKey();
+    const at = runtime.inbox_now orelse std.Io.Clock.real.now(runtime.io).toSeconds();
+    const proof = try crypto.inboxProof(runtime.allocator, &local_identity.d, &server_key, options.limit, at);
+    defer {
+        std.crypto.secureZero(u8, proof);
+        runtime.allocator.free(proof);
+    }
+    const items = try client.inbox(&recipient, options.limit, at, proof);
+    defer api.deinitInboxItems(runtime.allocator, items);
+
+    try runtime.stdout.writeAll("ID\texpiresAt\tviewsLeft\n");
+    for (items) |item| {
+        try runtime.stdout.print("{s}\t{d}\t{d}\n", .{ item.id, item.expiresAt, item.viewsLeft });
+    }
+}
+
 pub fn pullWithRemote(options: PullOptions, runtime: Runtime, remote: PullRemote) !void {
     // Validate the destination before opening because a consumed one-view drop cannot be restored.
     var output = files.prepareOutput(runtime.allocator, runtime.io, runtime.cwd, options.output, options.force) catch |err| switch (err) {
@@ -298,6 +356,16 @@ fn parseViews(value: []const u8) error{InvalidViews}!u32 {
     return std.fmt.parseInt(u32, value, 10) catch error.InvalidViews;
 }
 
+fn parseInboxLimit(value: []const u8) error{InvalidInboxLimit}!u32 {
+    if (value.len == 0) return error.InvalidInboxLimit;
+    for (value) |byte| {
+        if (byte < '0' or byte > '9') return error.InvalidInboxLimit;
+    }
+    const limit = std.fmt.parseInt(u32, value, 10) catch return error.InvalidInboxLimit;
+    if (limit == 0 or limit > 100) return error.InvalidInboxLimit;
+    return limit;
+}
+
 test "share parser accepts defaults and endpoint flags" {
     const args = [_][]const u8{
         "share",
@@ -327,6 +395,40 @@ test "pull parser accepts default output and force flag" {
     const forced_options = try parsePullArgs(&forced);
     try std.testing.expectEqualStrings("received.env", forced_options.output);
     try std.testing.expect(forced_options.force);
+}
+
+test "inbox parser accepts defaults limits and API overrides" {
+    const defaults = [_][]const u8{"inbox"};
+    const default_options = try parseInboxArgs(&defaults);
+    try std.testing.expectEqual(@as(u32, 20), default_options.limit);
+    try std.testing.expect(default_options.api == null);
+
+    const overridden = [_][]const u8{
+        "inbox",
+        "--limit",
+        "100",
+        "--api",
+        "https://api.example",
+    };
+    const options = try parseInboxArgs(&overridden);
+    try std.testing.expectEqual(@as(u32, 100), options.limit);
+    try std.testing.expectEqualStrings("https://api.example", options.api.?);
+}
+
+test "inbox parser rejects invalid limits and repeated flags" {
+    const invalid_limits = [_][]const []const u8{
+        &.{ "inbox", "--limit", "0" },
+        &.{ "inbox", "--limit", "101" },
+        &.{ "inbox", "--limit", "nope" },
+    };
+    for (invalid_limits) |args| {
+        try std.testing.expectError(error.Usage, parseInboxArgs(args));
+    }
+
+    const repeated_limit = [_][]const u8{ "inbox", "--limit", "2", "--limit", "3" };
+    const repeated_api = [_][]const u8{ "inbox", "--api", "https://one.example", "--api", "https://two.example" };
+    try std.testing.expectError(error.Usage, parseInboxArgs(&repeated_limit));
+    try std.testing.expectError(error.Usage, parseInboxArgs(&repeated_api));
 }
 
 test "command parsers reject repeated flags even at default values" {

@@ -26,6 +26,52 @@ fn decodeFixed(comptime len: usize, encoded: []const u8) ![len]u8 {
     return decoded;
 }
 
+fn scalar(last_byte: u8) [32]u8 {
+    var value: [32]u8 = @splat(0);
+    value[31] = last_byte;
+    return value;
+}
+
+fn publicSec1(private_scalar: [32]u8) ![65]u8 {
+    var point = try std.crypto.ecc.P256.basePoint.mul(private_scalar, .big);
+    defer std.crypto.secureZero(@TypeOf(point), @as([*]volatile @TypeOf(point), @ptrCast(&point))[0..1]);
+    return point.toUncompressedSec1();
+}
+
+fn referenceInboxProof(recipient_private: [32]u8, server_public: []const u8, limit: u32, at: i64) ![43]u8 {
+    const P256 = std.crypto.ecc.P256;
+    const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+    const server = try P256.fromSec1(server_public);
+    var shared_point = try server.mul(recipient_private, .big);
+    defer std.crypto.secureZero(@TypeOf(shared_point), @as([*]volatile @TypeOf(shared_point), @ptrCast(&shared_point))[0..1]);
+    var coordinates = shared_point.affineCoordinates();
+    defer std.crypto.secureZero(@TypeOf(coordinates), @as([*]volatile @TypeOf(coordinates), @ptrCast(&coordinates))[0..1]);
+    var shared_x = coordinates.x.toBytes(.big);
+    defer std.crypto.secureZero(u8, &shared_x);
+    const salt: [32]u8 = @splat(0);
+    var prk = std.crypto.kdf.hkdf.HkdfSha256.extract(&salt, &shared_x);
+    defer std.crypto.secureZero(u8, &prk);
+    var key: [32]u8 = undefined;
+    defer std.crypto.secureZero(u8, &key);
+    std.crypto.kdf.hkdf.HkdfSha256.expand(&key, "ashdrop-inbox-v1", prk);
+
+    const recipient_public = try publicSec1(recipient_private);
+    var recipient_encoded: [87]u8 = undefined;
+    _ = std.base64.url_safe_no_pad.Encoder.encode(&recipient_encoded, &recipient_public);
+    var request: [192]u8 = undefined;
+    const canonical_request = try std.fmt.bufPrint(
+        &request,
+        "ashdrop-inbox-v1\nGET\n/api/addresses/{s}/inbox\nlimit={d}&at={d}",
+        .{ &recipient_encoded, limit, at },
+    );
+    var mac: [HmacSha256.mac_length]u8 = undefined;
+    defer std.crypto.secureZero(u8, &mac);
+    HmacSha256.create(&mac, canonical_request, &key);
+    var encoded: [43]u8 = undefined;
+    _ = std.base64.url_safe_no_pad.Encoder.encode(&encoded, &mac);
+    return encoded;
+}
+
 fn sealAllocationFailure(allocator: std.mem.Allocator, recipient_public: [65]u8) !void {
     var sealed = try crypto.sealForRecipient(allocator, std.testing.io, "allocation cleanup", &recipient_public);
     defer sealed.deinit(allocator);
@@ -235,6 +281,60 @@ test "recipient protocol reports AES authentication failures" {
             sealed.ephemeral_pub,
         ),
     );
+}
+
+test "inbox proof agrees with the P-256 HKDF-HMAC protocol" {
+    const recipient_private = scalar(1);
+    const server_public = try publicSec1(scalar(2));
+    const expected = try referenceInboxProof(recipient_private, &server_public, 25, 1_700_000_000);
+    const proof = try crypto.inboxProof(
+        std.testing.allocator,
+        &recipient_private,
+        &server_public,
+        25,
+        1_700_000_000,
+    );
+    defer std.testing.allocator.free(proof);
+
+    try std.testing.expectEqualStrings(&expected, proof);
+}
+
+test "inbox proof binds the recipient limit and timestamp" {
+    const first_recipient = scalar(1);
+    const second_recipient = scalar(3);
+    const server_public = try publicSec1(scalar(2));
+    const base = try crypto.inboxProof(std.testing.allocator, &first_recipient, &server_public, 25, 1_700_000_000);
+    defer std.testing.allocator.free(base);
+    const changed_recipient = try crypto.inboxProof(std.testing.allocator, &second_recipient, &server_public, 25, 1_700_000_000);
+    defer std.testing.allocator.free(changed_recipient);
+    const changed_limit = try crypto.inboxProof(std.testing.allocator, &first_recipient, &server_public, 26, 1_700_000_000);
+    defer std.testing.allocator.free(changed_limit);
+    const changed_time = try crypto.inboxProof(std.testing.allocator, &first_recipient, &server_public, 25, 1_700_000_001);
+    defer std.testing.allocator.free(changed_time);
+
+    try std.testing.expect(!std.mem.eql(u8, base, changed_recipient));
+    try std.testing.expect(!std.mem.eql(u8, base, changed_limit));
+    try std.testing.expect(!std.mem.eql(u8, base, changed_time));
+}
+
+test "inbox proof rejects malformed server keys and private scalars" {
+    const valid_private = scalar(1);
+    const server_public = try publicSec1(scalar(2));
+    const short_key = [_]u8{0x04};
+    var malformed_key: [65]u8 = @splat(0);
+    malformed_key[0] = 0x04;
+    const order = [32]u8{
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84,
+        0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
+    };
+
+    try std.testing.expectError(error.InvalidInboxKey, crypto.inboxProof(std.testing.allocator, &valid_private, &short_key, 1, 1));
+    try std.testing.expectError(error.InvalidInboxKey, crypto.inboxProof(std.testing.allocator, &valid_private, &malformed_key, 1, 1));
+    const zero: [32]u8 = @splat(0);
+    try std.testing.expectError(error.InvalidPrivateKey, crypto.inboxProof(std.testing.allocator, &zero, &server_public, 1, 1));
+    try std.testing.expectError(error.InvalidPrivateKey, crypto.inboxProof(std.testing.allocator, &order, &server_public, 1, 1));
 }
 
 test "recipient protocol cleans up every sealing allocation failure" {

@@ -48,6 +48,31 @@ The identity file contains the private key needed to decrypt drops. The CLI has
 no private-key export command. Browser and CLI identities are separate; there
 is no automatic identity transfer between them.
 
+## Inbox
+
+```sh
+./zig-out/bin/ashdrop inbox [--limit <n>] [--api <url>]
+```
+
+`inbox` lists up to 20 pending recipient-keyed drops by default. `--limit`
+accepts a decimal value from `1` through `100`. Its output contains only the
+drop `ID`, `expiresAt`, and `viewsLeft`; it never fetches or prints plaintext.
+Use a listed ID with `pull` to receive a drop:
+
+```sh
+./zig-out/bin/ashdrop pull <id>
+```
+
+The receive address is public and safe to hand to senders. Listing its pending
+drops is private: the CLI loads the local receive identity, obtains the API's
+public inbox key, and derives an authenticated listing proof through P-256
+ECDH, HKDF, and HMAC. The API generates and persists its own inbox key; the
+CLI never uploads the recipient private key.
+
+Inbox proofs require HTTPS for non-loopback API endpoints. `http://localhost`,
+any `http://127.x.x.x` address, and `http://[::1]` are allowed for local
+development.
+
 ## Share
 
 ```sh
@@ -102,15 +127,16 @@ API: https://ashdrop.onrender.com
 Web: https://ashdrop.vercel.app
 ```
 
-`address` and `share` accept `--api` and `--web`. `pull` accepts `--api`.
+`address` and `share` accept `--api` and `--web`. `pull` and `inbox` accept
+`--api`.
 `ASHDROP_API_URL` provides the API endpoint for all network commands,
-including `share` and `pull` (and is also used when `address` formats a
-self-hosted receive reference). `ASHDROP_WEB_URL` affects only the human URLs
-emitted by `address` and `share`; `pull` does not use it. An explicit `--api`
-takes precedence over an API embedded in an Ashdrop URI, which takes precedence
-over `ASHDROP_API_URL`; otherwise the managed API is used. `--web` takes
-precedence over `ASHDROP_WEB_URL`; otherwise links using the managed API use
-the managed web URL.
+including `share`, `pull`, and `inbox` (and is also used when `address` formats
+a self-hosted receive reference). `ASHDROP_WEB_URL` affects only the human URLs
+emitted by `address` and `share`; `pull` and `inbox` do not use it. An explicit
+`--api` takes precedence over an API embedded in an Ashdrop URI, which takes
+precedence over `ASHDROP_API_URL`; otherwise the managed API is used. `--web`
+takes precedence over `ASHDROP_WEB_URL`; otherwise links using the managed API
+use the managed web URL.
 
 For a custom API without a configured web URL, `address` and `share` print
 self-contained Ashdrop URIs instead of web URLs:

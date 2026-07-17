@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"strings"
@@ -18,10 +21,18 @@ type Secret struct {
 	MaxViews     int // 0 = unlimited
 	Views        int
 	ExpiresAt    int64
+	CreatedAt    int64
 	NotifyTok    string
 	OpenedAt     *int64
 	RecipientPub string // non-empty = recipient-keyed drop (ECDH); recipient's public key
 	EphemeralPub string // non-empty = recipient-keyed drop (ECDH); sender's ephemeral public key
+}
+
+// InboxItem is the recipient-visible metadata for an unburned inbox entry.
+type InboxItem struct {
+	ID        string
+	ExpiresAt int64
+	ViewsLeft int
 }
 
 // Store is the persistence seam. SQLite today; swappable for Redis at scale
@@ -37,12 +48,17 @@ CREATE TABLE IF NOT EXISTS secrets (
 	views         INTEGER NOT NULL DEFAULT 0,
 	burned        INTEGER NOT NULL DEFAULT 0,
 	expires_at    INTEGER NOT NULL,
+	created_at    INTEGER NOT NULL DEFAULT 0,
 	notify_token  TEXT NOT NULL,
 	opened_at     INTEGER,
 	recipient_pub TEXT NOT NULL DEFAULT '',
 	ephemeral_pub TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_secrets_expires ON secrets(expires_at);
+CREATE TABLE IF NOT EXISTS inbox_keys (
+	id          INTEGER PRIMARY KEY CHECK (id = 1),
+	private_key BLOB NOT NULL
+);
 `
 
 func OpenStore(path string) (*Store, error) {
@@ -55,11 +71,19 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, err
 	}
-	// Migrate existing databases: safe to ignore errors when columns already exist.
-	_, _ = db.Exec(`ALTER TABLE secrets ADD COLUMN pin_protected INTEGER NOT NULL DEFAULT 0`)
-	_, _ = db.Exec(`ALTER TABLE secrets ADD COLUMN ephemeral_pub TEXT NOT NULL DEFAULT ''`)
-	_, err = db.Exec(`ALTER TABLE secrets ADD COLUMN recipient_pub TEXT NOT NULL DEFAULT ''`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name: recipient_pub") {
+	// Migrate existing databases before creating an index that uses new columns.
+	for _, migration := range []string{
+		`ALTER TABLE secrets ADD COLUMN pin_protected INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE secrets ADD COLUMN ephemeral_pub TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE secrets ADD COLUMN recipient_pub TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE secrets ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_secrets_recipient_inbox ON secrets(recipient_pub, burned, expires_at, created_at, id)`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -71,12 +95,105 @@ func (s *Store) Close() error { return s.db.Close() }
 func now() int64 { return time.Now().Unix() }
 
 func (s *Store) Put(id string, sec Secret) error {
+	createdAt := sec.CreatedAt
+	if createdAt == 0 {
+		createdAt = now()
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO secrets (id, ciphertext, iv, max_views, views, burned, expires_at, notify_token, recipient_pub, ephemeral_pub)
-		 VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`,
-		id, sec.Ciphertext, sec.IV, sec.MaxViews, sec.ExpiresAt, sec.NotifyTok, sec.RecipientPub, sec.EphemeralPub,
+		`INSERT INTO secrets (id, ciphertext, iv, max_views, views, burned, expires_at, created_at, notify_token, recipient_pub, ephemeral_pub)
+		 VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`,
+		id, sec.Ciphertext, sec.IV, sec.MaxViews, sec.ExpiresAt, createdAt, sec.NotifyTok, sec.RecipientPub, sec.EphemeralPub,
 	)
 	return err
+}
+
+// InboxPrivateKey returns the canonical P-256 private scalar used to decrypt
+// recipient inbox entries. Persisted key material is never replaced on error.
+func (s *Store) InboxPrivateKey() ([]byte, error) {
+	var stored []byte
+	err := s.db.QueryRow(`SELECT private_key FROM inbox_keys WHERE id = 1`).Scan(&stored)
+	if err == nil {
+		key, err := ecdh.P256().NewPrivateKey(stored)
+		if err != nil || !bytes.Equal(stored, key.Bytes()) {
+			if err != nil {
+				return nil, err
+			}
+			return nil, errors.New("invalid inbox private key")
+		}
+		return append([]byte(nil), stored...), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	var privateKey []byte
+	for {
+		candidate := make([]byte, 32)
+		if _, err := rand.Read(candidate); err != nil {
+			return nil, err
+		}
+		key, err := ecdh.P256().NewPrivateKey(candidate)
+		if err == nil {
+			privateKey = key.Bytes()
+			break
+		}
+	}
+
+	result, err := s.db.Exec(`INSERT OR IGNORE INTO inbox_keys (id, private_key) VALUES (1, ?)`, privateKey)
+	if err != nil {
+		return nil, err
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return nil, err
+	} else if rows == 1 {
+		return append([]byte(nil), privateKey...), nil
+	}
+
+	// Another store created the key after the initial lookup; validate it rather
+	// than replacing it so corruption remains observable.
+	if err := s.db.QueryRow(`SELECT private_key FROM inbox_keys WHERE id = 1`).Scan(&stored); err != nil {
+		return nil, err
+	}
+	key, err := ecdh.P256().NewPrivateKey(stored)
+	if err != nil || !bytes.Equal(stored, key.Bytes()) {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("invalid inbox private key")
+	}
+	return append([]byte(nil), stored...), nil
+}
+
+// ListInbox returns recipient-visible metadata for active recipient-keyed drops.
+func (s *Store) ListInbox(recipientPub string, limit int) ([]InboxItem, error) {
+	if limit <= 0 {
+		return []InboxItem{}, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT id, expires_at, CASE WHEN max_views = 0 THEN -1 ELSE max_views - views END
+		 FROM secrets
+		 WHERE recipient_pub = ? AND burned = 0 AND expires_at > ?
+		 ORDER BY created_at ASC, id ASC
+		 LIMIT ?`,
+		recipientPub, now(), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var inbox []InboxItem
+	for rows.Next() {
+		var item InboxItem
+		if err := rows.Scan(&item.ID, &item.ExpiresAt, &item.ViewsLeft); err != nil {
+			return nil, err
+		}
+		inbox = append(inbox, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return inbox, nil
 }
 
 // Metadata returns public drop state without reading the encrypted payload.
@@ -86,9 +203,9 @@ func (s *Store) Metadata(id string) (*Secret, error) {
 	var openedAt sql.NullInt64
 	var burned int
 	row := s.db.QueryRow(
-		`SELECT max_views, views, burned, expires_at, opened_at, recipient_pub, ephemeral_pub
+		`SELECT max_views, views, burned, expires_at, created_at, opened_at, recipient_pub, ephemeral_pub
 		 FROM secrets WHERE id = ?`, id)
-	err := row.Scan(&sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &openedAt, &sec.RecipientPub, &sec.EphemeralPub)
+	err := row.Scan(&sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &sec.CreatedAt, &openedAt, &sec.RecipientPub, &sec.EphemeralPub)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -122,9 +239,9 @@ func (s *Store) Open(id string) (*Secret, error) {
 	var burned int
 	var openedAt sql.NullInt64
 	row := tx.QueryRow(
-		`SELECT ciphertext, iv, max_views, views, burned, expires_at, opened_at, ephemeral_pub
+		`SELECT ciphertext, iv, max_views, views, burned, expires_at, created_at, opened_at, ephemeral_pub
 		 FROM secrets WHERE id = ?`, id)
-	err = row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &openedAt, &sec.EphemeralPub)
+	err = row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &sec.CreatedAt, &openedAt, &sec.EphemeralPub)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -181,9 +298,9 @@ func (s *Store) Fetch(id string) (*Secret, error) {
 	var openedAt sql.NullInt64
 	var burned int
 	row := s.db.QueryRow(
-		`SELECT ciphertext, iv, max_views, views, burned, expires_at, notify_token, opened_at, recipient_pub, ephemeral_pub
+		`SELECT ciphertext, iv, max_views, views, burned, expires_at, created_at, notify_token, opened_at, recipient_pub, ephemeral_pub
 		 FROM secrets WHERE id = ?`, id)
-	err := row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &sec.NotifyTok, &openedAt, &sec.RecipientPub, &sec.EphemeralPub)
+	err := row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &sec.CreatedAt, &sec.NotifyTok, &openedAt, &sec.RecipientPub, &sec.EphemeralPub)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

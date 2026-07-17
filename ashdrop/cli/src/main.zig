@@ -3,6 +3,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const commands = @import("commands.zig");
+const crypto = @import("crypto.zig");
 const identity = @import("identity.zig");
 const links = @import("links.zig");
 
@@ -20,6 +21,7 @@ const AddressRuntime = struct {
     home: []const u8,
     api_env: ?[]const u8 = null,
     web_env: ?[]const u8 = null,
+    inbox_now: ?i64 = null,
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
 };
@@ -56,6 +58,7 @@ fn runCommand(args: anytype, runtime: AddressRuntime) u8 {
     if (std.mem.eql(u8, command, "address")) return runAddress(args, runtime);
     if (std.mem.eql(u8, command, "share")) return runShare(args, runtime);
     if (std.mem.eql(u8, command, "pull")) return runPull(args, runtime);
+    if (std.mem.eql(u8, command, "inbox")) return runInbox(args, runtime);
     return writeFailure(runtime.stderr, error.Usage);
 }
 
@@ -69,6 +72,11 @@ fn runPull(args: []const []const u8, runtime: AddressRuntime) u8 {
     return 0;
 }
 
+fn runInbox(args: []const []const u8, runtime: AddressRuntime) u8 {
+    commands.inbox(args, commandRuntime(runtime)) catch |err| return writeFailure(runtime.stderr, err);
+    return 0;
+}
+
 fn commandRuntime(runtime: AddressRuntime) commands.Runtime {
     return .{
         .allocator = runtime.allocator,
@@ -78,6 +86,7 @@ fn commandRuntime(runtime: AddressRuntime) commands.Runtime {
         .home = runtime.home,
         .api_env = runtime.api_env,
         .web_env = runtime.web_env,
+        .inbox_now = runtime.inbox_now,
         .stdout = runtime.stdout,
         .stderr = runtime.stderr,
     };
@@ -114,6 +123,7 @@ fn writeFailure(stderr: *std.Io.Writer, err: anyerror) u8 {
     const status: u8 = switch (err) {
         error.Usage,
         error.InvalidEndpoint,
+        error.InsecureInboxEndpoint,
         error.HomeMissing,
         error.InvalidHomePath,
         error.IdentityAlreadyExists,
@@ -127,8 +137,8 @@ fn writeFailure(stderr: *std.Io.Writer, err: anyerror) u8 {
         else => 1,
     };
     const message = switch (err) {
-        error.Usage => "usage: ashdrop <address|share|pull> [options]\n",
-        error.InvalidEndpoint => "ashdrop: invalid API or web endpoint\n",
+        error.Usage => "usage: ashdrop <address|share|pull|inbox> [options]\n",
+        error.InvalidEndpoint, error.InsecureInboxEndpoint => "ashdrop: invalid API or web endpoint\n",
         error.HomeMissing => "ashdrop: HOME is not set\n",
         error.InvalidHomePath => "ashdrop: HOME is invalid\n",
         error.IdentityAlreadyExists => "ashdrop: receive identity already exists\n",
@@ -149,7 +159,12 @@ fn writeFailure(stderr: *std.Io.Writer, err: anyerror) u8 {
         error.RateLimited => "ashdrop: request was rate limited\n",
         error.DropUnavailable => "ashdrop: drop no longer exists\n",
         error.RecipientMismatch => "ashdrop: drop is for a different receive identity\n",
-        error.RemoteFailure, error.ResponseTooLarge, error.InvalidResponse => "ashdrop: API request failed\n",
+        error.InboxUnauthorized,
+        error.InboxRateLimited,
+        error.RemoteFailure,
+        error.ResponseTooLarge,
+        error.InvalidResponse,
+        => "ashdrop: API request failed\n",
         else => "ashdrop: command failed\n",
     };
     stderr.writeAll(message) catch {};
@@ -325,14 +340,168 @@ test "share and pull malformed commands report standard usage on stderr" {
     const share = [_][]const u8{"share"};
     try std.testing.expectEqual(@as(u8, 2), runCommand(&share, runtime));
     try std.testing.expectEqual(@as(usize, 0), stdout.written().len);
-    try std.testing.expectEqualStrings("usage: ashdrop <address|share|pull> [options]\n", stderr.written());
+    try std.testing.expectEqualStrings("usage: ashdrop <address|share|pull|inbox> [options]\n", stderr.written());
 
     stdout.clearRetainingCapacity();
     stderr.clearRetainingCapacity();
     const pull = [_][]const u8{"pull"};
     try std.testing.expectEqual(@as(u8, 2), runCommand(&pull, runtime));
     try std.testing.expectEqual(@as(usize, 0), stdout.written().len);
-    try std.testing.expectEqualStrings("usage: ashdrop <address|share|pull> [options]\n", stderr.written());
+    try std.testing.expectEqualStrings("usage: ashdrop <address|share|pull|inbox> [options]\n", stderr.written());
+}
+
+test "inbox command prints only item metadata" {
+    const test_server = @import("test_server.zig");
+    const at = 1_700_000_000;
+    const plaintext = "TOKEN=never-print-this\n";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var config_dir = try identity.openConfigDirAt(std.testing.io, tmp.dir, "home");
+    defer config_dir.close(std.testing.io);
+    const local_identity = try identity.create(std.testing.io, config_dir, "identity.json");
+    const recipient = links.formatRawReceive(local_identity.publicSec1());
+    const server_public = std.crypto.ecc.P256.basePoint.toUncompressedSec1();
+    const server_key = links.formatRawReceive(server_public);
+    const proof = try crypto.inboxProof(std.testing.allocator, &local_identity.d, &server_public, 2, at);
+    defer {
+        std.crypto.secureZero(u8, proof);
+        std.testing.allocator.free(proof);
+    }
+    const key_body = try std.fmt.allocPrint(std.testing.allocator, "{{\"publicKey\":\"{s}\"}}", .{&server_key});
+    defer std.testing.allocator.free(key_body);
+    const inbox_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/api/addresses/{s}/inbox?limit=2&at={d}",
+        .{ &recipient, at },
+    );
+    defer std.testing.allocator.free(inbox_target);
+    const inbox_headers = [_]std.http.Header{.{ .name = "x-ashdrop-inbox-proof", .value = proof }};
+    const expected = [_]test_server.ExpectedRequest{
+        .{ .method = .GET, .target = "/api/inbox-key", .response_status = .ok, .response_body = key_body },
+        .{
+            .method = .GET,
+            .target = inbox_target,
+            .required_headers = &inbox_headers,
+            .response_status = .ok,
+            .response_body = "{\"items\":[{\"id\":\"0123456789abcdef0123456789abcdef\",\"expiresAt\":1700003600,\"viewsLeft\":1}]}",
+        },
+    };
+    var server: test_server.Server = undefined;
+    try server.init(std.testing.io, &expected);
+    var server_live = true;
+    defer if (server_live) server.deinit() catch {};
+    const api_env = try std.fmt.allocPrint(std.testing.allocator, "http://127.0.0.1:{d}", .{server.port()});
+    defer std.testing.allocator.free(api_env);
+
+    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stdout.deinit();
+    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stderr.deinit();
+    const runtime = AddressRuntime{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .home_base = tmp.dir,
+        .home = "home",
+        .api_env = api_env,
+        .inbox_now = at,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    const args = [_][]const u8{ "inbox", "--limit", "2" };
+
+    try std.testing.expectEqual(@as(u8, 0), runCommand(&args, runtime));
+    try std.testing.expectEqualStrings("ID\texpiresAt\tviewsLeft\n0123456789abcdef0123456789abcdef\t1700003600\t1\n", stdout.written());
+    try std.testing.expect(std.mem.indexOf(u8, stdout.written(), plaintext) == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr.written().len);
+    try server.deinit();
+    server_live = false;
+}
+
+test "inbox missing identity reports status 2 on stderr" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stdout.deinit();
+    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stderr.deinit();
+    const runtime = AddressRuntime{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .home_base = tmp.dir,
+        .home = "home",
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    const args = [_][]const u8{"inbox"};
+
+    try std.testing.expectEqual(@as(u8, 2), runCommand(&args, runtime));
+    try std.testing.expectEqual(@as(usize, 0), stdout.written().len);
+    try std.testing.expectEqualStrings("ashdrop: receive identity does not exist; run `ashdrop address create`\n", stderr.written());
+}
+
+test "inbox unauthorized responses are generic operational failures" {
+    const test_server = @import("test_server.zig");
+    const at = 1_700_000_000;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var config_dir = try identity.openConfigDirAt(std.testing.io, tmp.dir, "home");
+    defer config_dir.close(std.testing.io);
+    const local_identity = try identity.create(std.testing.io, config_dir, "identity.json");
+    const recipient = links.formatRawReceive(local_identity.publicSec1());
+    const server_public = std.crypto.ecc.P256.basePoint.toUncompressedSec1();
+    const server_key = links.formatRawReceive(server_public);
+    const proof = try crypto.inboxProof(std.testing.allocator, &local_identity.d, &server_public, 20, at);
+    defer {
+        std.crypto.secureZero(u8, proof);
+        std.testing.allocator.free(proof);
+    }
+    const key_body = try std.fmt.allocPrint(std.testing.allocator, "{{\"publicKey\":\"{s}\"}}", .{&server_key});
+    defer std.testing.allocator.free(key_body);
+    const inbox_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/api/addresses/{s}/inbox?limit=20&at={d}",
+        .{ &recipient, at },
+    );
+    defer std.testing.allocator.free(inbox_target);
+    const inbox_headers = [_]std.http.Header{.{ .name = "x-ashdrop-inbox-proof", .value = proof }};
+    const expected = [_]test_server.ExpectedRequest{
+        .{ .method = .GET, .target = "/api/inbox-key", .response_status = .ok, .response_body = key_body },
+        .{
+            .method = .GET,
+            .target = inbox_target,
+            .required_headers = &inbox_headers,
+            .response_status = .unauthorized,
+            .response_body = "{\"error\":\"inbox is not available\"}",
+        },
+    };
+    var server: test_server.Server = undefined;
+    try server.init(std.testing.io, &expected);
+    var server_live = true;
+    defer if (server_live) server.deinit() catch {};
+    const api_env = try std.fmt.allocPrint(std.testing.allocator, "http://127.0.0.1:{d}", .{server.port()});
+    defer std.testing.allocator.free(api_env);
+
+    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stdout.deinit();
+    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stderr.deinit();
+    const runtime = AddressRuntime{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .home_base = tmp.dir,
+        .home = "home",
+        .api_env = api_env,
+        .inbox_now = at,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    const args = [_][]const u8{"inbox"};
+
+    try std.testing.expectEqual(@as(u8, 1), runCommand(&args, runtime));
+    try std.testing.expectEqual(@as(usize, 0), stdout.written().len);
+    try std.testing.expectEqualStrings("ashdrop: API request failed\n", stderr.written());
+    try server.deinit();
+    server_live = false;
 }
 
 test "address missing identity reports status 2 on stderr" {

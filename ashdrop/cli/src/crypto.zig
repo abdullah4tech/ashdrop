@@ -4,9 +4,11 @@ const std = @import("std");
 
 const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
 const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
+const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const P256 = std.crypto.ecc.P256;
 
 const hkdf_info = "ashdrop-ecdh-v1";
+const inbox_hkdf_info = "ashdrop-inbox-v1";
 
 const RandomSource = struct {
     context: ?*anyopaque,
@@ -131,6 +133,40 @@ pub fn openForRecipient(
     return plaintext;
 }
 
+/// Derives the canonical proof required to list inbox entries for a local recipient identity.
+pub fn inboxProof(
+    allocator: std.mem.Allocator,
+    recipient_private: *const [32]u8,
+    server_inbox_sec1: []const u8,
+    limit: u32,
+    at: i64,
+) ![]u8 {
+    try validatePrivateScalar(recipient_private);
+    if (limit == 0 or limit > 100) return error.InvalidInboxRequest;
+    const server_public = parseInboxServerPoint(server_inbox_sec1) catch return error.InvalidInboxKey;
+
+    var recipient_point = P256.basePoint.mul(recipient_private.*, .big) catch return error.InvalidPrivateKey;
+    defer secureZeroValue(P256, &recipient_point);
+    const recipient_sec1 = recipient_point.toUncompressedSec1();
+    var recipient_pub: [87]u8 = undefined;
+    _ = std.base64.url_safe_no_pad.Encoder.encode(&recipient_pub, &recipient_sec1);
+
+    var hmac_key: [HmacSha256.key_length]u8 = undefined;
+    defer std.crypto.secureZero(u8, &hmac_key);
+    deriveKeyWithInfo(recipient_private, server_public, inbox_hkdf_info, &hmac_key) catch return error.InvalidInboxKey;
+
+    var request_buffer: [160]u8 = undefined;
+    const request = std.fmt.bufPrint(
+        &request_buffer,
+        "ashdrop-inbox-v1\nGET\n/api/addresses/{s}/inbox\nlimit={d}&at={d}",
+        .{ &recipient_pub, limit, at },
+    ) catch unreachable;
+    var mac: [HmacSha256.mac_length]u8 = undefined;
+    defer std.crypto.secureZero(u8, &mac);
+    HmacSha256.create(&mac, request, &hmac_key);
+    return encodeB64url(allocator, &mac);
+}
+
 fn validatePrivateScalar(private: *const [32]u8) error{InvalidPrivateKey}!void {
     P256.scalar.rejectNonCanonical(private.*, .big) catch return error.InvalidPrivateKey;
     if (std.mem.allEqual(u8, private, 0)) return error.InvalidPrivateKey;
@@ -146,8 +182,17 @@ fn parseEphemeralPoint(sec1: []const u8) error{InvalidInput}!P256 {
     return P256.fromSec1(sec1) catch error.InvalidInput;
 }
 
+fn parseInboxServerPoint(sec1: []const u8) error{InvalidInboxKey}!P256 {
+    if (sec1.len != 65 or sec1[0] != 0x04) return error.InvalidInboxKey;
+    return P256.fromSec1(sec1) catch error.InvalidInboxKey;
+}
+
 fn deriveKey(private: *const [32]u8, peer_public: P256, key: *[Aes256Gcm.key_length]u8) error{InvalidInput}!void {
-    var shared_point = peer_public.mul(private.*, .big) catch return error.InvalidInput;
+    deriveKeyWithInfo(private, peer_public, hkdf_info, key) catch return error.InvalidInput;
+}
+
+fn deriveKeyWithInfo(private: *const [32]u8, peer_public: P256, info: []const u8, key: *[Aes256Gcm.key_length]u8) !void {
+    var shared_point = try peer_public.mul(private.*, .big);
     defer secureZeroValue(P256, &shared_point);
     // Protocol v1 feeds the ECDH x-coordinate, not a serialized point, into HKDF.
     var shared_coordinates = shared_point.affineCoordinates();
@@ -157,7 +202,7 @@ fn deriveKey(private: *const [32]u8, peer_public: P256, key: *[Aes256Gcm.key_len
     const salt: [32]u8 = @splat(0);
     var prk = HkdfSha256.extract(&salt, &shared_x);
     defer std.crypto.secureZero(u8, &prk);
-    HkdfSha256.expand(key, hkdf_info, prk);
+    HkdfSha256.expand(key, info, prk);
 }
 
 fn fillFromIo(context: ?*anyopaque, output: []u8) void {
