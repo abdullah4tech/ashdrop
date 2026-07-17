@@ -6,9 +6,9 @@ received file locally. It does not print environment-file plaintext.
 
 ## Build
 
-Run these commands from `ashdrop/cli`. `build.zig.zon` declares Zig
-`0.17.0-dev.1398+cb5635714` as the minimum and verified version; it does not
-enforce an exact toolchain pin.
+Run these commands from `ashdrop/cli`. `build.zig.zon` declares stable Zig
+`0.16.0` as the minimum and verified version; it does not enforce an exact
+toolchain pin.
 
 ```sh
 # Development build; installs ./zig-out/bin/ashdrop

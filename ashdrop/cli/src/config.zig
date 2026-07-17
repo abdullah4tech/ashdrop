@@ -23,15 +23,13 @@ fn validateEndpoint(endpoint: []const u8) error{InvalidEndpoint}![]const u8 {
     if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) return error.InvalidEndpoint;
     if (uri.user != null or uri.password != null or uri.query != null or uri.fragment != null) return error.InvalidEndpoint;
 
-    var hostname_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
-    if (std.Io.net.HostName.fromUri(uri, &hostname_buffer)) |_| {
-        return endpoint;
-    } else |_| {
-        const host = uri.host orelse return error.InvalidEndpoint;
-        var host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
-        const raw_host = host.toRaw(&host_buffer) catch return error.InvalidEndpoint;
+    const host = uri.host orelse return error.InvalidEndpoint;
+    var host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
+    const raw_host = host.toRaw(&host_buffer) catch return error.InvalidEndpoint;
+    // IP literals are valid endpoints even though they are not DNS host names.
+    std.Io.net.HostName.validate(raw_host) catch {
         _ = std.Io.net.IpAddress.parseLiteral(raw_host) catch return error.InvalidEndpoint;
-    }
+    };
     return endpoint;
 }
 
