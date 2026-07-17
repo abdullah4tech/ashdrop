@@ -2,11 +2,8 @@
 
 const std = @import("std");
 
-// pub const managed_api = "https://ashdrop.onrender.com";
-// pub const managed_web = "https://ashdrop.vercel.app";
-//
-pub const managed_api = "http://localhost:8080";
-pub const managed_web = "http://localhost:5173";
+pub const managed_api = "https://ashdrop.onrender.com";
+pub const managed_web = "https://ashdrop.vercel.app";
 
 pub fn resolveApi(flag: ?[]const u8, env: ?[]const u8, embedded: ?[]const u8) error{InvalidEndpoint}![]const u8 {
     // A caller can override an embedded self-hosted endpoint without rewriting a received link.
@@ -48,6 +45,11 @@ test "ordinary API references prefer explicit flag then environment" {
         try resolveApi(null, "https://env.example", null),
     );
     try std.testing.expectEqualStrings(managed_api, try resolveApi(null, null, null));
+}
+
+test "managed endpoints use deployed https services" {
+    try std.testing.expectEqualStrings("https://ashdrop.onrender.com", managed_api);
+    try std.testing.expectEqualStrings("https://ashdrop.vercel.app", managed_web);
 }
 
 test "web endpoint resolves independently" {

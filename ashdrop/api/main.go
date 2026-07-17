@@ -103,11 +103,10 @@ func (api *API) handleCreate(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusRequestEntityTooLarge, "secret too large")
 		return
 	}
-	if req.RecipientPub != "" {
-		if !validPublicKey(req.RecipientPub) || !validPublicKey(req.EphemeralPub) {
-			httpError(w, http.StatusBadRequest, "invalid recipient public key")
-			return
-		}
+	if (req.RecipientPub == "") != (req.EphemeralPub == "") ||
+		(req.RecipientPub != "" && (!validPublicKey(req.RecipientPub) || !validPublicKey(req.EphemeralPub))) {
+		httpError(w, http.StatusBadRequest, "invalid recipient public key")
+		return
 	}
 
 	ttl := req.TTL
@@ -430,7 +429,11 @@ func viewsLeft(sec *Secret) int {
 
 func validPublicKey(encoded string) bool {
 	pub, err := base64.RawURLEncoding.DecodeString(encoded)
-	return err == nil && len(pub) == 65 && pub[0] == 0x04 && base64.RawURLEncoding.EncodeToString(pub) == encoded
+	if err != nil || len(pub) != 65 || pub[0] != 0x04 || base64.RawURLEncoding.EncodeToString(pub) != encoded {
+		return false
+	}
+	_, err = ecdh.P256().NewPublicKey(pub)
+	return err == nil
 }
 
 func inboxUnauthorized(w http.ResponseWriter) {
