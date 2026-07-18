@@ -236,22 +236,17 @@ func (s *Store) Open(id string) (*Secret, error) {
 	defer tx.Rollback() //nolint:errcheck
 
 	var sec Secret
-	var burned int
-	var openedAt sql.NullInt64
-	row := tx.QueryRow(
-		`SELECT ciphertext, iv, max_views, views, burned, expires_at, created_at, opened_at, ephemeral_pub
-		 FROM secrets WHERE id = ?`, id)
-	err = row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &burned, &sec.ExpiresAt, &sec.CreatedAt, &openedAt, &sec.EphemeralPub)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
+	var openedAt int64
 	current := now()
-	if sec.ExpiresAt <= current {
-		if _, err := tx.Exec(`DELETE FROM secrets WHERE id = ?`, id); err != nil {
+	row := tx.QueryRow(
+		`UPDATE secrets
+		 SET views = views + 1, opened_at = COALESCE(opened_at, ?)
+		 WHERE id = ? AND burned = 0 AND expires_at > ? AND (max_views = 0 OR views < max_views)
+		 RETURNING ciphertext, iv, max_views, views, expires_at, created_at, opened_at, ephemeral_pub`,
+		current, id, current)
+	err = row.Scan(&sec.Ciphertext, &sec.IV, &sec.MaxViews, &sec.Views, &sec.ExpiresAt, &sec.CreatedAt, &openedAt, &sec.EphemeralPub)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.Exec(`DELETE FROM secrets WHERE id = ? AND expires_at <= ?`, id, current); err != nil {
 			return nil, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -259,31 +254,19 @@ func (s *Store) Open(id string) (*Secret, error) {
 		}
 		return nil, nil
 	}
-	if burned == 1 || (sec.MaxViews > 0 && sec.Views >= sec.MaxViews) {
-		return nil, nil
+	if err != nil {
+		return nil, err
 	}
-
-	sec.Views++
-	if openedAt.Valid {
-		v := openedAt.Int64
-		sec.OpenedAt = &v
-	} else {
-		sec.OpenedAt = &current
-	}
+	sec.OpenedAt = &openedAt
 
 	if sec.MaxViews > 0 && sec.Views >= sec.MaxViews {
 		_, err = tx.Exec(
-			`UPDATE secrets SET views = ?, burned = 1, ciphertext = '', iv = '', opened_at = ? WHERE id = ?`,
-			sec.Views, *sec.OpenedAt, id,
+			`UPDATE secrets SET burned = 1, ciphertext = '', iv = '' WHERE id = ?`,
+			id,
 		)
-	} else {
-		_, err = tx.Exec(
-			`UPDATE secrets SET views = ?, opened_at = ? WHERE id = ?`,
-			sec.Views, *sec.OpenedAt, id,
-		)
-	}
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

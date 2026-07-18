@@ -14,7 +14,6 @@ ashdrop/api/ashdrop
 # zig CLI
 ashdrop/cli/.zig-cache/
 ashdrop/cli/zig-out/
-docs/*
 
 # env / local
 .env

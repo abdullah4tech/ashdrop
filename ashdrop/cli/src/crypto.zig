@@ -155,7 +155,7 @@ pub fn inboxProof(
     defer std.crypto.secureZero(u8, &hmac_key);
     deriveKeyWithInfo(recipient_private, server_public, inbox_hkdf_info, &hmac_key) catch return error.InvalidInboxKey;
 
-    var request_buffer: [160]u8 = undefined;
+    var request_buffer: [192]u8 = undefined;
     const request = std.fmt.bufPrint(
         &request_buffer,
         "ashdrop-inbox-v1\nGET\n/api/addresses/{s}/inbox\nlimit={d}&at={d}",

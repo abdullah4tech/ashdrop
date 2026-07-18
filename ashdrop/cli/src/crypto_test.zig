@@ -317,6 +317,16 @@ test "inbox proof binds the recipient limit and timestamp" {
     try std.testing.expect(!std.mem.eql(u8, base, changed_time));
 }
 
+test "inbox proof supports full width signed timestamps" {
+    const recipient_private = scalar(1);
+    const server_public = try publicSec1(scalar(2));
+    for ([_]i64{ std.math.minInt(i64), std.math.maxInt(i64) }) |timestamp| {
+        const proof = try crypto.inboxProof(std.testing.allocator, &recipient_private, &server_public, 100, timestamp);
+        defer std.testing.allocator.free(proof);
+        try std.testing.expectEqual(@as(usize, 43), proof.len);
+    }
+}
+
 test "inbox proof rejects malformed server keys and private scalars" {
     const valid_private = scalar(1);
     const server_public = try publicSec1(scalar(2));
