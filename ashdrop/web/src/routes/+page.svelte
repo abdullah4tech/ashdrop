@@ -243,6 +243,7 @@ $ ashdrop share --to &lt;receive-address&gt; --file .env</code></pre>
 		overflow-x: auto;
 		max-width: 34rem;
 	}
+	.cli-panel code { color: inherit; }
 
 	.beam-note {
 		max-width: 30rem;
