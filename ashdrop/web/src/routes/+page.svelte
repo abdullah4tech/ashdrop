@@ -72,6 +72,24 @@
 			browser holds the key to open it, so even a compromised chat can't leak the secret.
 		</p>
 	</section>
+
+	<!-- 5 · CLI -->
+	<section class="block">
+		<p class="section-head">Prefer the terminal?</p>
+		<div class="cli-reveal" use:reveal>
+			<pre class="cli-panel"><code>$ ashdrop address create
+$ ashdrop share --to &lt;receive-address&gt; --file .env</code></pre>
+		</div>
+		<p class="beam-note">
+			<code>ashdrop</code> is a standalone CLI — same zero-knowledge protocol, same one-time reads,
+			no browser required.
+			<a
+				href="https://github.com/abdullah4tech/ashdrop/tree/main/ashdrop/cli"
+				target="_blank"
+				rel="noreferrer">Get the CLI on GitHub →</a
+			>
+		</p>
+	</section>
 </main>
 
 <style>
@@ -208,6 +226,24 @@
 	}
 	.share-reveal:global(.in) { opacity: 1; }
 
+	.cli-reveal {
+		opacity: 0;
+		transition: opacity 0.6s ease;
+	}
+	.cli-reveal:global(.in) { opacity: 1; }
+	.cli-panel {
+		margin: 0 auto;
+		padding: 1.1rem 1.4rem;
+		background: var(--color-ink);
+		color: var(--color-bg);
+		border: 1px solid var(--color-line);
+		font-family: var(--font-mono);
+		font-size: 0.86rem;
+		line-height: 1.7;
+		overflow-x: auto;
+		max-width: 34rem;
+	}
+
 	.beam-note {
 		max-width: 30rem;
 		margin: 1.4rem auto 0;
@@ -215,5 +251,10 @@
 		font-size: 0.82rem;
 		line-height: 1.6;
 		color: var(--color-muted);
+	}
+	.beam-note a {
+		color: var(--color-ink);
+		text-decoration: underline;
+		text-underline-offset: 2px;
 	}
 </style>
