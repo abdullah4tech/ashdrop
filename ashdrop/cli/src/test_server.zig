@@ -38,8 +38,8 @@ pub const Server = struct {
         if (std.Io.net.IpAddress.connect(&address, self.io, .{ .mode = .stream })) |stream| {
             stream.close(self.io);
         } else |_| {}
-        self.listener.socket.close(self.io);
         self.thread.join();
+        self.listener.socket.close(self.io);
         self.listener = undefined;
         if (self.failure) |err| return err;
         if (self.next != self.expected.len) return error.TestServerMissedRequest;
